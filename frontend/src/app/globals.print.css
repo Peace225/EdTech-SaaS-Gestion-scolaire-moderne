@@ -1,0 +1,9 @@
+@media print {
+  body {
+    background: white !important;
+    color: black !important;
+  }
+  header, footer, button, nav {
+    display: none !important;
+  }
+}
