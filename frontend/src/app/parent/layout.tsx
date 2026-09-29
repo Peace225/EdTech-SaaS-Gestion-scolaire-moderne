@@ -4,7 +4,7 @@ import { redirect } from "next/navigation"
 import Link from "next/link"
 import { 
   LogOut, GraduationCap, LayoutDashboard, 
-  Users, Wallet, FileText, Sparkles 
+  Users, Wallet, FileText, Sparkles, MessageSquare
 } from "lucide-react"
 
 export default async function ParentLayout({ children }: { children: React.ReactNode }) {
@@ -34,7 +34,7 @@ export default async function ParentLayout({ children }: { children: React.React
             <p className="text-xs text-slate-500">Abidjan, Côte d'Ivoire</p>
           </div>
           
-          {/* Liens de navigation corrigés */}
+          {/* Liens de navigation */}
           <div className="space-y-1.5">
             <Link 
               className="flex items-center gap-3 px-3.5 py-2.5 rounded-2xl hover:bg-slate-900/80 transition-all text-sm font-medium text-slate-300 hover:text-white group border border-transparent hover:border-slate-800" 
@@ -55,6 +55,28 @@ export default async function ParentLayout({ children }: { children: React.React
               href="/parent/invoices"
             >
               <Wallet size={18} className="text-amber-400 group-hover:scale-110 transition-transform" /> Factures & Frais
+            </Link>
+
+            {/* Lien Messagerie AVEC NOTIFICATION INSTANTANÉE */}
+            <Link 
+              className="flex items-center justify-between px-3.5 py-2.5 rounded-2xl bg-pink-500/5 hover:bg-slate-900/80 transition-all text-sm font-medium text-slate-300 hover:text-white group border border-pink-500/10 hover:border-slate-800" 
+              href="/parent/messages"
+            >
+              <div className="flex items-center gap-3">
+                <div className="relative">
+                  <MessageSquare size={18} className="text-pink-400 group-hover:scale-110 transition-transform" />
+                  {/* Point animé (Ping) en haut à droite de l'icône */}
+                  <span className="absolute -top-1 -right-1 flex h-2.5 w-2.5">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-pink-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-pink-500"></span>
+                  </span>
+                </div>
+                <span className="text-white font-semibold">Messagerie</span>
+              </div>
+              {/* Badge du nombre de notifications */}
+              <span className="bg-pink-500 text-white text-[10px] font-bold px-2 py-0.5 rounded-full shadow-[0_0_10px_rgba(236,72,153,0.5)]">
+                2
+              </span>
             </Link>
 
             <Link 
