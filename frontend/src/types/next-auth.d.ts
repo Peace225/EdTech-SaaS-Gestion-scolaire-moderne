@@ -1,22 +1,29 @@
-import { Role } from "@prisma/client"
 
+import type { DefaultSession } from "next-auth";
+
+export type AppRole =
+  | "ADMIN"
+  | "TEACHER"
+  | "PARENT"
+  | "STUDENT";
+
+// Extension des types Auth.js
 declare module "next-auth" {
   interface User {
-    role: Role
+    role?: AppRole;
   }
+
   interface Session {
     user: {
-      id: string
-      email: string
-      name: string
-      role: Role
-    }
+      id?: string;
+      role?: AppRole;
+    } & DefaultSession["user"];
   }
 }
 
+// Extension du JWT
 declare module "next-auth/jwt" {
   interface JWT {
-    role: Role
-    id: string
+    role?: AppRole;
   }
 }

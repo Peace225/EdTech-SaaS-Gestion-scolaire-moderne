@@ -1,261 +1,323 @@
-import { auth } from "@/auth"
-import { prisma } from "@/lib/prisma"
-import { redirect } from "next/navigation"
-import { revalidatePath } from "next/cache"
-import { Award, BookOpen, Plus, Trash2, GraduationCap, Calendar, Hash, Layers } from "lucide-react"
 
-// Liste standard des matières
-const SUBJECTS = [
-  "Mathématiques", "Français", "Anglais", "Physique-Chimie", "SVT",
-  "Histoire-Géographie", "Philosophie", "Espagnol", "Allemand", "EPS",
-  "Informatique", "EDHC", "Arts Plastiques", "Musique"
-]
+import { auth } from "@/auth";
+import { prisma } from "@/lib/prisma";
+import { redirect } from "next/navigation";
+import Link from "next/link";
+
+import {
+  Award,
+  BookOpen,
+  GraduationCap,
+  ShieldCheck,
+  Sparkles,
+  Clock3,
+  CheckCircle2,
+  XCircle,
+  ChevronRight,
+  LayoutDashboard,
+} from "lucide-react";
+
+import GradeReviewForm from "./GradeReviewForm";
+
+export const dynamic = "force-dynamic";
+
+const numberFormatter = new Intl.NumberFormat("fr-FR");
+
+const dateFormatter = new Intl.DateTimeFormat("fr-FR", {
+  day: "2-digit",
+  month: "short",
+  year: "numeric",
+  timeZone: "Africa/Abidjan",
+});
 
 export default async function AdminGradesPage() {
-  const session = await auth()
-  if (!session || (session.user as any).role !== "ADMIN") {
-    redirect("/login")
+  const session = await auth();
+
+  if (!session?.user?.id) {
+    redirect("/login");
   }
 
-  // Server Action : Ajouter une note
-  async function createGrade(formData: FormData) {
-    "use server"
-    const studentId = formData.get("studentId") as string
-    const subject = formData.get("subject") as string
-    const score = parseFloat(formData.get("score") as string)
-    const coef = parseInt(formData.get("coef") as string) || 1
-    const term = formData.get("term") as string
+  const admin = await prisma.user.findUnique({
+    where: { id: session.user.id },
+    select: { role: true },
+  });
 
-    if (!studentId || !subject || isNaN(score) || !term) return
-
-    await prisma.grade.create({
-      data: {
-        studentId,
-        subject,
-        score,
-        coef,
-        term,
-      }
-    })
-
-    revalidatePath("/admin/grades")
+  if (admin?.role !== "ADMIN") {
+    redirect("/");
   }
 
-  // Server Action : Supprimer une note
-  async function deleteGrade(formData: FormData) {
-    "use server"
-    const id = formData.get("id") as string
-    if (!id) return
-
-    await prisma.grade.delete({ where: { id } })
-    revalidatePath("/admin/grades")
-  }
-
-  // Récupération des élèves et des notes existantes
-  const [students, grades] = await Promise.all([
-    prisma.student.findMany({
-      include: { user: true, class: true },
-      orderBy: { class: { name: 'asc' } }
-    }),
+  const [
+    pendingGrades,
+    pendingCount,
+    approvedCount,
+    rejectedCount,
+  ] = await Promise.all([
     prisma.grade.findMany({
-      include: {
+      where: { status: "PENDING" },
+      select: {
+        id: true,
+        subject: true,
+        score: true,
+        coef: true,
+        term: true,
+        createdAt: true,
+        submittedBy: {
+          select: {
+            name: true,
+            email: true,
+          },
+        },
         student: {
-          include: { user: true, class: true }
-        }
+          select: {
+            user: {
+              select: {
+                name: true,
+                email: true,
+              },
+            },
+            class: {
+              select: {
+                name: true,
+                level: true,
+              },
+            },
+          },
+        },
       },
-      orderBy: { createdAt: "desc" },
-      take: 50
-    })
-  ])
+      orderBy: { createdAt: "asc" },
+      take: 50,
+    }),
+
+    prisma.grade.count({
+      where: { status: "PENDING" },
+    }),
+
+    prisma.grade.count({
+      where: { status: "APPROVED" },
+    }),
+
+    prisma.grade.count({
+      where: { status: "REJECTED" },
+    }),
+  ]);
+
+  const stats = [
+    {
+      label: "En attente",
+      value: pendingCount,
+      icon: Clock3,
+      color: "text-amber-300 bg-amber-400/10",
+    },
+    {
+      label: "Approuvées",
+      value: approvedCount,
+      icon: CheckCircle2,
+      color: "text-emerald-300 bg-emerald-400/10",
+    },
+    {
+      label: "Rejetées",
+      value: rejectedCount,
+      icon: XCircle,
+      color: "text-red-300 bg-red-400/10",
+    },
+    {
+      label: "Total des notes",
+      value: pendingCount + approvedCount + rejectedCount,
+      icon: Award,
+      color: "text-cyan-300 bg-cyan-400/10",
+    },
+  ];
 
   return (
-    <div className="space-y-8 animate-in fade-in duration-500 max-w-7xl mx-auto pb-12">
-      
-      {/* En-tête */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-slate-900/30 border border-slate-800 p-6 rounded-3xl">
-        <div>
-          <h1 className="text-2xl font-bold text-white flex items-center gap-2">
-            <Award className="text-blue-400" /> Gestion des Notes & Évaluations
-          </h1>
-          <p className="text-sm text-slate-400 mt-1">Enregistrez et suivez les performances académiques des élèves.</p>
-        </div>
-      </div>
-
-      {/* Formulaire de Saisie d'une Note */}
-      <div className="bg-slate-900/50 border border-slate-800 rounded-3xl p-6 backdrop-blur-xl shadow-2xl relative overflow-hidden">
-        <div className="absolute -right-20 -top-20 w-64 h-64 bg-emerald-500/5 rounded-full blur-[80px] pointer-events-none" />
-        
-        <h2 className="text-sm font-bold text-white uppercase tracking-wider mb-5 flex items-center gap-2 relative z-10">
-          <Plus size={16} className="text-emerald-400" /> Saisir une nouvelle note
-        </h2>
-        
-        <form action={createGrade} className="grid md:grid-cols-5 gap-4 items-end relative z-10">
-          
-          {/* Sélection de l'élève */}
-          <div className="space-y-2 md:col-span-1">
-            <label className="text-xs font-bold uppercase tracking-wider text-slate-500 flex items-center gap-2">
-              <GraduationCap size={14} /> Élève
-            </label>
-            <select name="studentId" defaultValue="" className="w-full bg-slate-950 border border-slate-800 text-white p-3 rounded-xl text-sm focus:border-blue-500 outline-none appearance-none cursor-pointer" required>
-              <option value="" disabled>Choisir un élève...</option>
-              {students.map(s => (
-                <option key={s.id} value={s.id}>
-                  {s.user.name || s.user.email} ({s.class.name})
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {/* Sélection de la matière */}
-          <div className="space-y-2">
-            <label className="text-xs font-bold uppercase tracking-wider text-slate-500 flex items-center gap-2">
-              <BookOpen size={14} /> Matière
-            </label>
-            <select name="subject" defaultValue="" className="w-full bg-slate-950 border border-slate-800 text-white p-3 rounded-xl text-sm focus:border-blue-500 outline-none appearance-none cursor-pointer" required>
-              <option value="" disabled>Matière...</option>
-              {SUBJECTS.map(subj => (
-                <option key={subj} value={subj}>{subj}</option>
-              ))}
-            </select>
-          </div>
-
-          {/* Note sur 20 */}
-          <div className="space-y-2">
-            <label className="text-xs font-bold uppercase tracking-wider text-slate-500 flex items-center gap-2">
-              <Award size={14} /> Note (/20)
-            </label>
-            <input 
-              name="score" 
-              type="number" 
-              step="0.25" 
-              min="0" 
-              max="20" 
-              placeholder="Ex: 14.5" 
-              className="w-full bg-slate-950 border border-slate-800 text-white p-3 rounded-xl text-sm focus:border-blue-500 outline-none" 
-              required 
-            />
-          </div>
-
-          {/* Coefficient */}
-          <div className="space-y-2">
-            <label className="text-xs font-bold uppercase tracking-wider text-slate-500 flex items-center gap-2">
-              <Hash size={14} /> Coef
-            </label>
-            <input 
-              name="coef" 
-              type="number" 
-              min="1" 
-              max="10" 
-              defaultValue="1" 
-              className="w-full bg-slate-950 border border-slate-800 text-white p-3 rounded-xl text-sm focus:border-blue-500 outline-none" 
-              required 
-            />
-          </div>
-
-          {/* Trimestre */}
-          <div className="space-y-2">
-            <label className="text-xs font-bold uppercase tracking-wider text-slate-500 flex items-center gap-2">
-              <Calendar size={14} /> Trimestre
-            </label>
-            <select name="term" defaultValue="Trimestre 1" className="w-full bg-slate-950 border border-slate-800 text-white p-3 rounded-xl text-sm focus:border-blue-500 outline-none appearance-none cursor-pointer" required>
-              <option value="Trimestre 1">Trimestre 1</option>
-              <option value="Trimestre 2">Trimestre 2</option>
-              <option value="Trimestre 3">Trimestre 3</option>
-            </select>
-          </div>
-
-          <div className="md:col-span-5 pt-2">
-            <button type="submit" className="w-full bg-white hover:bg-slate-200 text-black font-bold p-3.5 rounded-xl transition-all shadow-lg flex items-center justify-center gap-2">
-              <Plus size={18} /> Enregistrer la note
-            </button>
-          </div>
-
-        </form>
-      </div>
-
-      {/* Tableau des notes récentes */}
-      <div className="bg-slate-900/50 border border-slate-800 rounded-3xl overflow-hidden backdrop-blur-xl shadow-2xl">
-        <div className="p-5 border-b border-slate-800 flex justify-between items-center bg-slate-900/80">
-          <span className="font-bold text-white">Dernières notes enregistrées</span>
-          <span className="bg-blue-500/10 text-blue-400 border border-blue-500/20 px-3 py-1 rounded-full text-xs font-semibold">
-            {grades.length} affichées
+    <main className="min-h-screen bg-[#08111f] text-white">
+      <div className="mx-auto max-w-7xl space-y-8 px-4 py-8 pb-16 sm:px-6 lg:px-8">
+        <div className="flex items-center gap-2 text-xs text-slate-400">
+          <LayoutDashboard size={16} className="text-teal-400" />
+          <Link
+            href="/admin/dashboard"
+            className="hover:text-teal-300"
+          >
+            Administration
+          </Link>
+          <ChevronRight size={14} />
+          <span className="font-semibold text-white">
+            Validation des notes
           </span>
         </div>
 
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm text-left">
-            <thead className="bg-slate-900/40 text-slate-400 text-xs uppercase tracking-wider border-b border-slate-800">
-              <tr>
-                <th className="p-4 font-semibold">Élève</th>
-                <th className="p-4 font-semibold">Classe</th>
-                <th className="p-4 font-semibold">Matière</th>
-                <th className="p-4 font-semibold">Note</th>
-                <th className="p-4 font-semibold">Coef</th>
-                <th className="p-4 font-semibold">Trimestre</th>
-                <th className="p-4 font-semibold text-right">Action</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-800/60">
-              {grades.length === 0 ? (
-                <tr>
-                  <td colSpan={7} className="p-12 text-center text-slate-500">
-                    <Award className="mx-auto mb-3 opacity-20" size={32} />
-                    Aucune note enregistrée pour le moment.
-                  </td>
-                </tr>
-              ) : (
-                grades.map(g => {
-                  // Couleur dynamique selon la note
-                  const isGood = g.score >= 12;
-                  const isAverage = g.score >= 10 && g.score < 12;
+        {/* HERO */}
+        <section className="relative overflow-hidden rounded-[30px] border border-teal-400/15 bg-gradient-to-br from-[#123d49] via-[#102a3a] to-[#0d1b2c] p-7 sm:p-9">
+          <div className="pointer-events-none absolute -right-20 -top-20 h-80 w-80 rounded-full bg-teal-400/10 blur-[85px]" />
 
-                  return (
-                    <tr key={g.id} className="hover:bg-slate-800/40 transition-colors group">
-                      <td className="p-4 font-bold text-white">
-                        {g.student.user.name || g.student.user.email}
-                      </td>
-                      <td className="p-4">
-                        <span className="bg-slate-800 text-slate-300 border border-slate-700 px-2.5 py-1 rounded-md text-xs font-bold">
-                          {g.student.class.name}
-                        </span>
-                      </td>
-                      <td className="p-4 text-slate-300 font-medium">
-                        {g.subject}
-                      </td>
-                      <td className="p-4">
-                        <span className={`px-3 py-1 rounded-full text-xs font-extrabold border ${
-                          isGood 
-                            ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20" 
-                            : isAverage 
-                            ? "bg-amber-500/10 text-amber-400 border-amber-500/20" 
-                            : "bg-red-500/10 text-red-400 border-red-500/20"
-                        }`}>
-                          {g.score} / 20
-                        </span>
-                      </td>
-                      <td className="p-4 text-slate-400 text-xs">
-                        coef. {g.coef}
-                      </td>
-                      <td className="p-4 text-slate-400 text-xs">
-                        {g.term}
-                      </td>
-                      <td className="p-4 text-right">
-                        <form action={deleteGrade}>
-                          <input type="hidden" name="id" value={g.id} />
-                          <button type="submit" className="text-slate-500 hover:text-red-400 p-2 rounded-lg hover:bg-red-500/10 transition-colors inline-flex" title="Supprimer la note">
-                            <Trash2 size={16} />
-                          </button>
-                        </form>
-                      </td>
-                    </tr>
-                  )
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
+          <div className="relative z-10">
+            <div className="mb-5 inline-flex items-center gap-2 rounded-full border border-teal-400/20 bg-teal-400/10 px-4 py-2 text-[11px] font-bold uppercase tracking-wider text-teal-300">
+              <Sparkles size={15} />
+              Contrôle pédagogique
+            </div>
+
+            <h1 className="text-3xl font-extrabold tracking-tight sm:text-4xl">
+              Validation des{" "}
+              <span className="bg-gradient-to-r from-teal-300 to-cyan-300 bg-clip-text text-transparent">
+                notes
+              </span>
+            </h1>
+
+            <p className="mt-4 max-w-2xl text-sm leading-7 text-slate-300">
+              Vérifiez les évaluations soumises par les
+              enseignants, approuvez les notes conformes
+              ou demandez une correction avant publication.
+            </p>
+          </div>
+        </section>
+
+        {/* INDICATEURS */}
+        <section className="grid grid-cols-2 gap-4 xl:grid-cols-4">
+          {stats.map((stat) => {
+            const Icon = stat.icon;
+
+            return (
+              <div
+                key={stat.label}
+                className="rounded-[24px] border border-white/[0.08] bg-[#111e30] p-5 transition-all duration-300 hover:-translate-y-1 hover:border-teal-400/25 sm:p-6"
+              >
+                <div
+                  className={`mb-5 flex h-12 w-12 items-center justify-center rounded-2xl ${stat.color}`}
+                >
+                  <Icon size={23} />
+                </div>
+
+                <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                  {stat.label}
+                </p>
+
+                <p className="mt-3 text-3xl font-extrabold">
+                  {numberFormatter.format(stat.value)}
+                </p>
+              </div>
+            );
+          })}
+        </section>
+
+        {/* LISTE À VALIDER */}
+        <section className="space-y-5">
+          <div>
+            <h2 className="text-xl font-bold sm:text-2xl">
+              Notes en attente de vérification
+            </h2>
+            <p className="mt-2 text-sm text-slate-400">
+              {numberFormatter.format(pendingCount)} note(s) à examiner.
+              Les 50 plus anciennes sont affichées en priorité.
+            </p>
+          </div>
+
+          {pendingGrades.length === 0 ? (
+            <div className="flex flex-col items-center gap-4 rounded-[28px] border border-white/[0.08] bg-[#111e30] px-6 py-16 text-center">
+              <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-emerald-400/10 text-emerald-300">
+                <CheckCircle2 size={32} />
+              </div>
+              <h3 className="font-bold">
+                Aucune validation en attente
+              </h3>
+              <p className="max-w-md text-sm leading-7 text-slate-400">
+                Les prochaines notes soumises par les
+                enseignants apparaîtront ici.
+              </p>
+            </div>
+          ) : (
+            <div className="grid gap-5 xl:grid-cols-2">
+              {pendingGrades.map((grade) => {
+                const studentName =
+                  grade.student.user.name ||
+                  grade.student.user.email ||
+                  "Élève sans nom";
+
+                const teacherName =
+                  grade.submittedBy?.name ||
+                  grade.submittedBy?.email ||
+                  "Auteur non renseigné";
+
+                return (
+                  <article
+                    key={grade.id}
+                    className="rounded-[26px] border border-white/[0.08] bg-[#111e30] p-5 transition-colors hover:border-teal-400/25 sm:p-6"
+                  >
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <h3 className="break-words text-lg font-bold">
+                          {studentName}
+                        </h3>
+
+                        <p className="mt-1 text-xs text-slate-400">
+                          {grade.student.class?.name ?? "Sans classe"}
+                          {grade.student.class?.level
+                            ? ` · ${grade.student.class.level}`
+                            : ""}
+                        </p>
+                      </div>
+
+                      <span className="rounded-full border border-amber-400/20 bg-amber-400/10 px-3 py-1.5 text-xs font-semibold text-amber-300">
+                        En attente
+                      </span>
+                    </div>
+
+                    <div className="mt-6 grid grid-cols-2 gap-3">
+                      <div className="rounded-xl bg-[#0b1727] p-4">
+                        <p className="text-xs text-slate-400">
+                          Note attribuée
+                        </p>
+                        <p className="mt-2 text-2xl font-extrabold text-teal-300">
+                          {Number(grade.score).toLocaleString("fr-FR")}
+                          <span className="text-sm text-slate-400">
+                            {" "}/20
+                          </span>
+                        </p>
+                      </div>
+
+                      <div className="rounded-xl bg-[#0b1727] p-4">
+                        <p className="text-xs text-slate-400">
+                          Coefficient
+                        </p>
+                        <p className="mt-2 text-2xl font-extrabold">
+                          {grade.coef}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="mt-5 space-y-3 text-sm">
+                      <p className="flex items-center gap-2 text-slate-300">
+                        <BookOpen size={16} className="text-teal-400" />
+                        {grade.subject} · {grade.term}
+                      </p>
+
+                      <p className="flex items-center gap-2 text-slate-400">
+                        <GraduationCap
+                          size={16}
+                          className="text-cyan-400"
+                        />
+                        Enseignant : {teacherName}
+                      </p>
+
+                      <p className="text-xs text-slate-500">
+                        Soumise le{" "}
+                        {dateFormatter.format(grade.createdAt)}
+                      </p>
+                    </div>
+
+                    <div className="mt-6 border-t border-white/[0.08] pt-5">
+                      <GradeReviewForm gradeId={grade.id} />
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          )}
+        </section>
+
+        <footer className="flex items-center gap-2 border-t border-white/[0.07] pt-6 text-xs text-slate-500">
+          <ShieldCheck size={16} className="text-teal-400" />
+          EdTech SaaS · Validation administrative
+        </footer>
       </div>
-
-    </div>
-  )
+    </main>
+  );
 }

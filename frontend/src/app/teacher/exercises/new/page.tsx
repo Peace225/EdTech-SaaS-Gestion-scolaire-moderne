@@ -1,181 +1,189 @@
-// src/app/teacher/exercises/new/page.tsx
-"use client"
 
-import { useState } from "react"
-import { useRouter } from "next/navigation"
-import { Sparkles, ArrowLeft, Send, CheckCircle2, BookOpen } from "lucide-react"
+import { auth } from "@/auth";
+import { prisma } from "@/lib/prisma";
+import { redirect } from "next/navigation";
+import Link from "next/link";
 
-export default function NewTeacherExercisePage() {
-  const router = useRouter()
+import {
+  ArrowLeft,
+  BookOpen,
+  GraduationCap,
+  ShieldCheck,
+  Sparkles,
+  Users,
+} from "lucide-react";
 
-  const [title, setTitle] = useState("")
-  const [subject, setSubject] = useState("Mathématiques")
-  const [className, setClassName] = useState("Terminale A")
-  const [difficulty, setDifficulty] = useState("Intermédiaire")
-  const [description, setDescription] = useState("")
-  const [isSubmitting, setIsSubmitting] = useState(false)
-  const [isSuccess, setIsSuccess] = useState(false)
+import NewExerciseForm from "./NewExerciseForm";
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault()
-    setIsSubmitting(true)
+export const dynamic = "force-dynamic";
 
-    // Simulation de l'enregistrement de l'exercice
-    setTimeout(() => {
-      setIsSubmitting(false)
-      setIsSuccess(true)
-    }, 1500)
+export default async function NewTeacherExercisePage() {
+  const session = await auth();
+
+  if (!session?.user?.id) {
+    redirect("/login");
   }
 
+  const user = await prisma.user.findUnique({
+    where: {
+      id: session.user.id,
+    },
+    select: {
+      id: true,
+      role: true,
+    },
+  });
+
+  if (!user) {
+    redirect("/login");
+  }
+
+  if (
+    user.role !== "TEACHER" &&
+    user.role !== "ADMIN"
+  ) {
+    redirect("/dashboard");
+  }
+
+  // Récupérer les véritables affectations.
+  const assignments =
+    await prisma.teachingAssignment.findMany({
+      where:
+        user.role === "TEACHER"
+          ? { teacherId: user.id }
+          : {},
+      select: {
+        id: true,
+        subject: true,
+        class: {
+          select: {
+            name: true,
+            level: true,
+          },
+        },
+        teacher: {
+          select: {
+            name: true,
+          },
+        },
+      },
+      orderBy: [
+        { class: { name: "asc" } },
+        { subject: "asc" },
+      ],
+    });
+
+  const assignmentOptions = assignments.map(
+    (assignment) => ({
+      id: assignment.id,
+      subject: assignment.subject,
+      className: assignment.class.name,
+      classLevel: assignment.class.level,
+      teacherName:
+        assignment.teacher.name ?? "Enseignant",
+    })
+  );
+
   return (
-    <div className="space-y-8 animate-in fade-in duration-500 max-w-4xl mx-auto pb-16 relative text-white">
-      
-      {/* Effets lumineux d'arrière-plan */}
-      <div className="absolute top-0 right-1/4 w-96 h-96 bg-cyan-600/10 rounded-full blur-[120px] pointer-events-none" />
-      <div className="absolute top-1/3 left-10 w-80 h-80 bg-blue-600/10 rounded-full blur-[100px] pointer-events-none" />
-
-      {/* Bouton Retour */}
-      <button 
-        onClick={() => router.push("/teacher/exercises")}
-        className="inline-flex items-center gap-2 text-xs font-semibold text-slate-400 hover:text-white transition-colors cursor-pointer relative z-10"
+    <div className="mx-auto max-w-5xl space-y-7 pb-12">
+      {/* RETOUR */}
+      <Link
+        href="/teacher/exercises"
+        className="inline-flex items-center gap-2 text-sm font-semibold text-slate-400 transition hover:text-teal-400"
       >
-        <ArrowLeft size={16} /> Retour à la gestion des exercices
-      </button>
+        <ArrowLeft size={17} />
+        Retour aux exercices
+      </Link>
 
-      {/* En-tête Premium */}
-      <div className="relative z-10 bg-slate-900/40 border border-slate-800/80 p-6 md:p-8 rounded-3xl backdrop-blur-2xl shadow-2xl space-y-2">
-        <div className="inline-flex items-center gap-2 bg-cyan-500/10 border border-cyan-500/20 text-cyan-400 px-3.5 py-1.5 rounded-full text-xs font-semibold">
-          <Sparkles size={14} /> Publication • Espace Enseignant
-        </div>
-        <h1 className="text-2xl md:text-3xl font-extrabold tracking-tight">
-          Créer une nouvelle série d'exercices
-        </h1>
-        <p className="text-xs text-slate-400">
-          Renseignez les détails ci-dessous pour publier instantanément l'exercice auprès de vos élèves à Abidjan.
-        </p>
-      </div>
+      {/* EN-TÊTE */}
+      <section className="relative overflow-hidden rounded-3xl border border-slate-800 bg-[#111e30] p-6 md:p-8">
+        <div className="pointer-events-none absolute -right-20 -top-24 h-72 w-72 rounded-full bg-teal-500/10 blur-[100px]" />
 
-      {isSuccess ? (
-        <div className="bg-slate-900/40 border border-slate-800/80 rounded-3xl p-12 text-center space-y-6 backdrop-blur-xl shadow-2xl relative z-10">
-          <div className="w-20 h-20 bg-emerald-500/10 text-emerald-400 rounded-full flex items-center justify-center mx-auto border border-emerald-500/20">
-            <CheckCircle2 size={40} />
+        <div className="relative space-y-4">
+          <div className="inline-flex items-center gap-2 rounded-full border border-teal-500/20 bg-teal-500/10 px-3 py-1.5 text-xs font-semibold text-teal-300">
+            <Sparkles size={14} />
+            Création pédagogique
           </div>
-          <h2 className="text-2xl font-bold">Exercice publié avec succès !</h2>
-          <p className="text-slate-400 text-sm max-w-md mx-auto">
-            La série d'exercices a été enregistrée et transmise aux élèves de la classe sélectionnée.
+
+          <h1 className="flex items-center gap-3 text-2xl font-extrabold tracking-tight text-white md:text-3xl">
+            <BookOpen
+              size={29}
+              className="shrink-0 text-teal-400"
+            />
+            Nouvel exercice
+          </h1>
+
+          <p className="max-w-2xl text-sm leading-7 text-slate-400">
+            Préparez une série d'exercices,
+            définissez son niveau de difficulté,
+            puis enregistrez-la comme brouillon
+            ou publiez-la pour la classe sélectionnée.
           </p>
-          <button 
-            onClick={() => router.push("/teacher/exercises")}
-            className="bg-white hover:bg-slate-200 text-black px-6 py-3 rounded-2xl text-xs font-bold transition-all shadow-lg cursor-pointer"
-          >
-            Retourner à la liste des exercices
-          </button>
         </div>
+      </section>
+
+      {/* RÉSUMÉ */}
+      <section className="grid gap-4 sm:grid-cols-2">
+        <div className="flex items-center gap-4 rounded-2xl border border-slate-800 bg-[#111e30] p-5">
+          <div className="rounded-xl bg-teal-500/10 p-3 text-teal-400">
+            <GraduationCap size={23} />
+          </div>
+
+          <div>
+            <p className="text-xl font-bold text-white">
+              {assignmentOptions.length}
+            </p>
+            <p className="mt-1 text-xs text-slate-400">
+              Affectations disponibles
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-4 rounded-2xl border border-slate-800 bg-[#111e30] p-5">
+          <div className="rounded-xl bg-sky-500/10 p-3 text-sky-400">
+            <ShieldCheck size={23} />
+          </div>
+
+          <div>
+            <p className="font-bold text-white">
+              Publication sécurisée
+            </p>
+            <p className="mt-1 text-xs text-slate-400">
+              Classe et matière vérifiées en base
+            </p>
+          </div>
+        </div>
+      </section>
+
+      {assignmentOptions.length === 0 ? (
+        <section className="rounded-3xl border border-slate-800 bg-[#111e30] px-6 py-14 text-center">
+          <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-2xl bg-teal-500/10 text-teal-400">
+            <Users size={30} />
+          </div>
+
+          <h2 className="text-lg font-bold text-white">
+            Aucune affectation pédagogique
+          </h2>
+
+          <p className="mx-auto mt-3 max-w-md text-sm leading-7 text-slate-400">
+            Une classe et une matière doivent
+            vous être attribuées avant de pouvoir
+            créer un exercice.
+          </p>
+
+          <Link
+            href="/teacher/exercises"
+            className="mt-6 inline-flex items-center justify-center rounded-xl bg-teal-500 px-5 py-3 text-sm font-bold text-slate-950 transition hover:bg-teal-400"
+          >
+            Retour aux exercices
+          </Link>
+        </section>
       ) : (
-        <form onSubmit={handleSubmit} className="bg-slate-900/40 border border-slate-800/80 rounded-3xl p-6 md:p-8 backdrop-blur-xl shadow-2xl space-y-6 relative z-10">
-          
-          {/* Titre de l'exercice */}
-          <div className="space-y-2">
-            <label className="text-xs font-bold uppercase tracking-wider text-slate-400">
-              Titre de l'exercice
-            </label>
-            <input 
-              type="text" 
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              placeholder="Ex: Série d'exercices n°3 : Nombres complexes"
-              className="w-full bg-slate-950/80 border border-slate-800 rounded-2xl p-4 text-xs text-white placeholder:text-slate-600 focus:outline-none focus:border-cyan-500 transition-colors"
-              required 
-            />
-          </div>
-
-          {/* Grille : Matière & Classe */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div className="space-y-2">
-              <label className="text-xs font-bold uppercase tracking-wider text-slate-400">
-                Matière
-              </label>
-              <select 
-                value={subject}
-                onChange={(e) => setSubject(e.target.value)}
-                className="w-full bg-slate-950/80 border border-slate-800 rounded-2xl p-4 text-xs text-white focus:outline-none focus:border-cyan-500 transition-colors"
-              >
-                <option value="Mathématiques">Mathématiques</option>
-                <option value="Physique-Chimie">Physique-Chimie</option>
-                <option value="Français">Français</option>
-                <option value="Anglais LV1">Anglais LV1</option>
-                <option value="SVT">SVT</option>
-              </select>
-            </div>
-
-            <div className="space-y-2">
-              <label className="text-xs font-bold uppercase tracking-wider text-slate-400">
-                Classe Cible
-              </label>
-              <select 
-                value={className}
-                onChange={(e) => setClassName(e.target.value)}
-                className="w-full bg-slate-950/80 border border-slate-800 rounded-2xl p-4 text-xs text-white focus:outline-none focus:border-cyan-500 transition-colors"
-              >
-                <option value="Terminale A">Terminale A</option>
-                <option value="Terminale D">Terminale D</option>
-                <option value="Première C">Première C</option>
-                <option value="Seconde A">Seconde A</option>
-              </select>
-            </div>
-          </div>
-
-          {/* Niveau de difficulté */}
-          <div className="space-y-2">
-            <label className="text-xs font-bold uppercase tracking-wider text-slate-400">
-              Niveau de difficulté
-            </label>
-            <select 
-              value={difficulty}
-              onChange={(e) => setDifficulty(e.target.value)}
-              className="w-full bg-slate-950/80 border border-slate-800 rounded-2xl p-4 text-xs text-white focus:outline-none focus:border-cyan-500 transition-colors"
-            >
-              <option value="Standard">Standard</option>
-              <option value="Intermédiaire">Intermédiaire</option>
-              <option value="Avancé">Avancé</option>
-            </select>
-          </div>
-
-          {/* Description et consignes */}
-          <div className="space-y-2">
-            <label className="text-xs font-bold uppercase tracking-wider text-slate-400">
-              Consignes et description de l'exercice
-            </label>
-            <textarea 
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              placeholder="Décrivez les exercices ou ajoutez les instructions détaillées pour vos élèves..."
-              rows={5}
-              className="w-full bg-slate-950/80 border border-slate-800 rounded-2xl p-4 text-xs text-white placeholder:text-slate-600 focus:outline-none focus:border-cyan-500 transition-colors resize-none"
-              required
-            />
-          </div>
-
-          {/* Bouton de soumission */}
-          <div className="flex justify-end pt-2">
-            <button
-              type="submit"
-              disabled={isSubmitting}
-              className="bg-white hover:bg-slate-200 disabled:opacity-50 text-black px-8 py-3.5 rounded-2xl text-xs font-extrabold transition-all flex items-center gap-2 shadow-lg cursor-pointer"
-            >
-              {isSubmitting ? (
-                <>Publication en cours...</>
-              ) : (
-                <>
-                  <Send size={15} /> Publier l'exercice
-                </>
-              )}
-            </button>
-          </div>
-
-        </form>
+        <NewExerciseForm
+          assignments={assignmentOptions}
+          isAdmin={user.role === "ADMIN"}
+        />
       )}
-
     </div>
-  )
+  );
 }

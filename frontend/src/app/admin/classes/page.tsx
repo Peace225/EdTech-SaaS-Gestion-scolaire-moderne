@@ -1,126 +1,201 @@
-import { prisma } from "@/lib/prisma"
-import { revalidatePath } from "next/cache"
-import { Users, BookOpen, Plus, Layers, GraduationCap } from "lucide-react"
 
-export default async function AdminClassesPage() {
-  
-  // CORRECTION : La Server Action doit être à l'intérieur du composant 
-  // (ou être exportée si elle est à l'extérieur).
-  async function createClass(formData: FormData) {
-    "use server"
-    const name = formData.get("name") as string
-    const level = formData.get("level") as string
-    
-    if (!name || !level) return
+"use client";
 
-    await prisma.class.create({ 
-      data: { name: name.trim(), level: level.trim() } 
-    })
-    
-    revalidatePath("/admin/classes")
-  }
+import {
+  useActionState,
+  useEffect,
+  useRef,
+} from "react";
 
-  // On récupère les classes en les triant par niveau puis par nom pour plus de clarté
-  const classes = await prisma.class.findMany({
-    orderBy: [
-      { level: 'asc' },
-      { name: 'asc' }
-    ]
-  })
+import {
+  Plus,
+  BookOpen,
+  Layers,
+  Loader2,
+  CheckCircle2,
+  AlertCircle,
+  ArrowRight,
+} from "lucide-react";
+
+type ActionState = {
+  status: "idle" | "success" | "error";
+  message: string;
+};
+
+type Props = {
+  action: (
+    previousState: ActionState,
+    formData: FormData
+  ) => Promise<ActionState>;
+};
+
+const initialState: ActionState = {
+  status: "idle",
+  message: "",
+};
+
+const inputClass = `
+  h-13 w-full
+  rounded-xl border border-white/[0.09]
+  bg-[#0b1727] px-4
+  text-sm text-white
+  placeholder:text-slate-600
+  outline-none
+  transition-all duration-300
+  focus:border-teal-400/50
+  focus:ring-4 focus:ring-teal-400/10
+  disabled:opacity-60
+`;
+
+export default function CreateClassForm({ action }: Props) {
+  const formRef = useRef<HTMLFormElement>(null);
+
+  const [state, formAction, pending] = useActionState(
+    action,
+    initialState
+  );
+
+  // Vider le formulaire après une création réussie
+  useEffect(() => {
+    if (state.status === "success") {
+      formRef.current?.reset();
+    }
+  }, [state]);
 
   return (
-    <div className="space-y-8 animate-in fade-in duration-500 max-w-6xl mx-auto">
-      
-      {/* En-tête */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-slate-900/30 border border-slate-800 p-6 rounded-3xl">
-        <div>
-          <h1 className="text-2xl font-bold text-white flex items-center gap-2">
-            <Users className="text-blue-400" /> Gestion des Classes
-          </h1>
-          <p className="text-sm text-slate-400 mt-1">Structure académique de l'établissement ({classes.length} classes actives).</p>
-        </div>
-      </div>
+    <section className="relative overflow-hidden rounded-[28px] border border-white/[0.08] bg-[#111e30]/90 p-6 shadow-[0_20px_60px_-30px_rgba(0,0,0,0.5)] sm:p-8">
 
-      {/* Formulaire de création Premium */}
-      <div className="bg-slate-900/50 border border-slate-800 rounded-3xl p-6 backdrop-blur-xl shadow-2xl">
-        <h2 className="text-sm font-bold text-white uppercase tracking-wider mb-5 flex items-center gap-2">
-          <Plus size={16} className="text-emerald-400" /> Nouvelle Classe
-        </h2>
-        
-        <form action={createClass} className="grid md:grid-cols-12 gap-4 items-end">
-          <div className="md:col-span-5 space-y-2">
-            <label className="text-xs font-bold uppercase tracking-wider text-slate-500 flex items-center gap-2">
-              <BookOpen size={14} /> Nom de la classe
-            </label>
-            <input 
-              name="name" 
-              placeholder="Ex: 6ème A, Tle D..." 
-              className="w-full bg-slate-950 border border-slate-800 text-white p-3.5 rounded-xl text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none transition-all" 
-              required
-            />
+      {/* Lumière décorative */}
+      <div className="pointer-events-none absolute -right-20 -top-20 h-64 w-64 rounded-full bg-teal-400/5 blur-[80px]" />
+
+      <div className="relative z-10">
+
+        {/* En-tête du formulaire */}
+        <div className="mb-7 flex items-center gap-4 border-b border-white/[0.07] pb-6">
+          <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-teal-400/20 bg-teal-400/10 text-teal-300">
+            <Plus size={23} />
           </div>
-          
-          <div className="md:col-span-4 space-y-2">
-            <label className="text-xs font-bold uppercase tracking-wider text-slate-500 flex items-center gap-2">
-              <Layers size={14} /> Niveau
-            </label>
-            <input 
-              name="level" 
-              placeholder="Ex: 6ème, Terminale..." 
-              className="w-full bg-slate-950 border border-slate-800 text-white p-3.5 rounded-xl text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none transition-all" 
-              required
-            />
+
+          <div>
+            <h2 className="text-lg font-bold text-white">
+              Nouvelle classe
+            </h2>
+
+            <p className="mt-1 text-xs text-slate-400">
+              Ajoutez une classe à la structure académique.
+            </p>
           </div>
-          
-          <div className="md:col-span-3">
-            <button 
-              type="submit" 
-              className="w-full bg-white hover:bg-slate-200 text-black p-3.5 rounded-xl text-sm font-bold transition-all flex items-center justify-center gap-2 shadow-lg shadow-white/5"
+        </div>
+
+        {/* Retour de la Server Action */}
+        {state.status !== "idle" && (
+          <div
+            role={state.status === "error" ? "alert" : "status"}
+            aria-live="polite"
+            className={`mb-6 flex items-start gap-3 rounded-xl border px-4 py-4 text-sm ${
+              state.status === "success"
+                ? "border-emerald-400/20 bg-emerald-400/10 text-emerald-300"
+                : "border-red-400/20 bg-red-400/10 text-red-300"
+            }`}
+          >
+            {state.status === "success" ? (
+              <CheckCircle2 size={19} className="shrink-0" />
+            ) : (
+              <AlertCircle size={19} className="shrink-0" />
+            )}
+
+            <span>{state.message}</span>
+          </div>
+        )}
+
+        {/* Formulaire */}
+        <form
+          ref={formRef}
+          action={formAction}
+          className="grid grid-cols-1 items-end gap-5 md:grid-cols-12"
+        >
+
+          {/* Nom */}
+          <div className="space-y-2 md:col-span-5">
+
+            <label
+              htmlFor="class-name"
+              className="flex items-center gap-2 text-xs font-semibold text-slate-300"
             >
-              <Plus size={18} /> Créer
+              <BookOpen size={15} className="text-teal-400" />
+              Nom de la classe
+              <span className="text-teal-400">*</span>
+            </label>
+
+            <input
+              id="class-name"
+              name="name"
+              type="text"
+              required
+              maxLength={100}
+              disabled={pending}
+              placeholder="Ex : 6ème A, Terminale D"
+              className={inputClass}
+            />
+          </div>
+
+          {/* Niveau */}
+          <div className="space-y-2 md:col-span-4">
+
+            <label
+              htmlFor="class-level"
+              className="flex items-center gap-2 text-xs font-semibold text-slate-300"
+            >
+              <Layers size={15} className="text-cyan-400" />
+              Niveau académique
+              <span className="text-teal-400">*</span>
+            </label>
+
+            <input
+              id="class-level"
+              name="level"
+              type="text"
+              required
+              maxLength={100}
+              disabled={pending}
+              placeholder="Ex : 6ème, Terminale"
+              className={inputClass}
+            />
+          </div>
+
+          {/* Bouton */}
+          <div className="md:col-span-3">
+            <button
+              type="submit"
+              disabled={pending}
+              className="group flex h-13 w-full cursor-pointer items-center justify-center gap-2 rounded-xl bg-teal-400 px-4 text-sm font-bold text-[#092b35] shadow-lg shadow-teal-950/20 transition-all duration-300 hover:-translate-y-0.5 hover:bg-teal-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {pending ? (
+                <>
+                  <Loader2 size={18} className="animate-spin" />
+                  Création...
+                </>
+              ) : (
+                <>
+                  <Plus size={19} />
+                  Créer la classe
+                  <ArrowRight
+                    size={16}
+                    className="transition-transform group-hover:translate-x-1"
+                  />
+                </>
+              )}
             </button>
           </div>
         </form>
-      </div>
 
-      {/* Grille des classes */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-        {classes.length === 0 ? (
-          <div className="col-span-full p-12 text-center flex flex-col items-center justify-center space-y-3 bg-slate-900/30 border border-slate-800 rounded-3xl">
-            <div className="w-16 h-16 bg-slate-800 rounded-full flex items-center justify-center text-slate-500">
-              <Layers size={32} />
-            </div>
-            <p className="text-slate-400 font-medium">Aucune classe n'a été créée pour le moment.</p>
-          </div>
-        ) : (
-          classes.map(c => (
-            <div 
-              key={c.id} 
-              className="bg-slate-900/50 border border-slate-800 p-5 rounded-2xl hover:border-blue-500/30 hover:bg-slate-900 transition-all group flex flex-col justify-between min-h-[120px]"
-            >
-              <div className="flex justify-between items-start mb-4">
-                <div className="w-10 h-10 rounded-xl bg-blue-500/10 text-blue-400 flex items-center justify-center group-hover:scale-110 group-hover:bg-blue-500/20 transition-all border border-blue-500/20">
-                  <GraduationCap size={20} />
-                </div>
-                <span className="text-[10px] font-extrabold tracking-wider uppercase bg-slate-800/80 text-slate-300 px-2.5 py-1 rounded-md border border-slate-700">
-                  {c.level}
-                </span>
-              </div>
-              
-              <div>
-                <h3 className="text-lg font-extrabold text-white group-hover:text-blue-400 transition-colors">
-                  {c.name}
-                </h3>
-                {/* Espace prévu pour afficher le nombre d'élèves plus tard */}
-                <p className="text-xs text-slate-500 mt-1 flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                  Gérer cette classe &rarr;
-                </p>
-              </div>
-            </div>
-          ))
-        )}
-      </div>
+        <p className="mt-5 text-xs leading-6 text-slate-500">
+          Le nom et le niveau sont obligatoires.
+          Vérifiez qu'une classe équivalente n'est pas
+          déjà enregistrée.
+        </p>
 
-    </div>
-  )
+      </div>
+    </section>
+  );
 }

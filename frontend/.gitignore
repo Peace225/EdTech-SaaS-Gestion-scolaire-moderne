@@ -1,0 +1,6 @@
+
+# Sauvegardes Prisma
+prisma/schema.prisma.bak
+
+# Cache TypeScript
+*.tsbuildinfo

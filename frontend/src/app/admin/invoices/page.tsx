@@ -1,256 +1,1053 @@
-import { prisma } from "@/lib/prisma"
-import { revalidatePath } from "next/cache"
-import { 
-  FileText, Wallet, AlertCircle, Plus, Users, User, 
-  Calendar, CheckCircle, Trash2, Banknote 
-} from "lucide-react"
+import type { ReactNode } from "react";
+
+import { auth } from "@/auth";
+import { prisma } from "@/lib/prisma";
+import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
+
+import {
+  FileText,
+  Wallet,
+  AlertCircle,
+  Plus,
+  Users,
+  UserRound,
+  CalendarDays,
+  Banknote,
+  ReceiptText,
+  ShieldCheck,
+  GraduationCap,
+  ArrowUpRight,
+} from "lucide-react";
+
+import { InvoiceActionButton } from "./InvoiceActionButton";
+
+export const dynamic = "force-dynamic";
+
+const inputClass =
+  "w-full rounded-xl border border-slate-700/70 bg-[#08111f] px-4 py-3 text-sm text-white outline-none transition placeholder:text-slate-500 focus:border-teal-400 focus:ring-2 focus:ring-teal-400/10";
+
+const moneyFormatter = new Intl.NumberFormat("fr-FR", {
+  maximumFractionDigits: 0,
+});
+
+function formatMoney(amount: number) {
+  return `${moneyFormatter.format(amount)} FCFA`;
+}
+
+function getString(formData: FormData, key: string) {
+  const value = formData.get(key);
+
+  if (typeof value !== "string" || !value.trim()) {
+    throw new Error(`Le champ ${key} est obligatoire.`);
+  }
+
+  return value.trim();
+}
+
+function getAmount(formData: FormData) {
+  const raw = getString(formData, "amount");
+
+  if (!/^\d+$/.test(raw)) {
+    throw new Error("Le montant doit être un entier positif en FCFA.");
+  }
+
+  const amount = Number(raw);
+
+  if (
+    !Number.isSafeInteger(amount) ||
+    amount <= 0 ||
+    amount > 1_000_000_000
+  ) {
+    throw new Error("Montant de facture invalide.");
+  }
+
+  return amount;
+}
+
+function getDueDate(formData: FormData) {
+  const raw = getString(formData, "dueDate");
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    throw new Error("Format de date invalide.");
+  }
+
+  // Midi UTC permet d'éviter les décalages de date
+  // lors de l'affichage selon certains fuseaux horaires.
+  const date = new Date(`${raw}T12:00:00.000Z`);
+
+  if (
+    Number.isNaN(date.getTime()) ||
+    date.toISOString().slice(0, 10) !== raw
+  ) {
+    throw new Error("Date d'échéance invalide.");
+  }
+
+  return date;
+}
+
+async function requireAdmin() {
+  const session = await auth();
+
+  if (!session?.user?.id) {
+    throw new Error("Authentification requise.");
+  }
+
+  // Vérification du rôle dans la base, et pas seulement
+  // dans le JWT ou les données envoyées par le navigateur.
+  const user = await prisma.user.findUnique({
+    where: { id: session.user.id },
+    select: { id: true, role: true },
+  });
+
+  if (!user || user.role !== "ADMIN") {
+    throw new Error("Accès réservé à l'administration.");
+  }
+
+  return user;
+}
+
+// ========================================
+// SERVER ACTIONS
+// ========================================
+
+async function createSingleInvoice(formData: FormData) {
+  "use server";
+
+  await requireAdmin();
+
+  const studentId = getString(formData, "studentId");
+  const amount = getAmount(formData);
+  const dueDate = getDueDate(formData);
+
+  const student = await prisma.student.findUnique({
+    where: { id: studentId },
+    select: {
+      id: true,
+      parentId: true,
+    },
+  });
+
+  if (!student) {
+    throw new Error("Élève introuvable.");
+  }
+
+  if (!student.parentId) {
+    throw new Error(
+      "Cet élève n'a pas de parent associé. Complétez d'abord son dossier."
+    );
+  }
+
+  await prisma.invoice.create({
+    data: {
+      studentId: student.id,
+      parentId: student.parentId,
+      amount,
+      dueDate,
+      status: "PENDING",
+    },
+  });
+
+  revalidatePath("/admin/invoices");
+  revalidatePath("/parent/invoices");
+}
+
+async function createBulkInvoices(formData: FormData) {
+  "use server";
+
+  await requireAdmin();
+
+  const classId = getString(formData, "classId");
+  const amount = getAmount(formData);
+  const dueDate = getDueDate(formData);
+
+  const schoolClass = await prisma.class.findUnique({
+    where: { id: classId },
+    select: { id: true },
+  });
+
+  if (!schoolClass) {
+    throw new Error("Classe introuvable.");
+  }
+
+  const students = await prisma.student.findMany({
+    where: {
+      classId: schoolClass.id,
+      parentId: { not: null },
+    },
+    select: {
+      id: true,
+      parentId: true,
+    },
+  });
+
+  if (students.length === 0) {
+    throw new Error(
+      "Aucun élève avec un parent associé dans cette classe."
+    );
+  }
+
+  // Ne pas recréer les mêmes factures lors d'un nouvel envoi
+  // du même lot (même élève, échéance et montant).
+  // Une contrainte UNIQUE métier reste nécessaire pour une
+  // garantie absolue en cas de requêtes simultanées.
+  const existingInvoices = await prisma.invoice.findMany({
+    where: {
+      studentId: { in: students.map((student) => student.id) },
+      dueDate,
+      amount,
+    },
+    select: { studentId: true },
+  });
+
+  const alreadyInvoiced = new Set(
+    existingInvoices.map((invoice) => invoice.studentId)
+  );
+
+  const invoicesToCreate = students
+    .filter(
+      (student): student is typeof student & { parentId: string } =>
+        student.parentId !== null && !alreadyInvoiced.has(student.id)
+    )
+    .map((student) => ({
+      studentId: student.id,
+      parentId: student.parentId,
+      amount,
+      dueDate,
+      status: "PENDING" as const,
+    }));
+
+  if (invoicesToCreate.length === 0) {
+    throw new Error(
+      "Tous les élèves concernés disposent déjà d'une facture pour ce montant et cette échéance."
+    );
+  }
+
+  await prisma.invoice.createMany({
+    data: invoicesToCreate,
+  });
+
+  revalidatePath("/admin/invoices");
+  revalidatePath("/parent/invoices");
+}
+
+async function markPaid(formData: FormData) {
+  "use server";
+
+  await requireAdmin();
+
+  const id = getString(formData, "id");
+
+  // L'opération est atomique :
+  // statut de facture et paiement manuel sont liés.
+  await prisma.$transaction(async (tx) => {
+    const invoice = await tx.invoice.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        amount: true,
+        status: true,
+      },
+    });
+
+    if (!invoice) {
+      throw new Error("Facture introuvable.");
+    }
+
+    if (invoice.status === "PAID") {
+      throw new Error("Cette facture est déjà payée.");
+    }
+
+    const updated = await tx.invoice.updateMany({
+      where: {
+        id,
+        status: {
+          in: ["PENDING", "OVERDUE"],
+        },
+      },
+      data: {
+        status: "PAID",
+      },
+    });
+
+    if (updated.count !== 1) {
+      throw new Error(
+        "Cette facture a déjà été modifiée. Rechargez la page."
+      );
+    }
+
+    // Comptabiliser les paiements déjà enregistrés.
+    const previousPayments = await tx.payment.aggregate({
+      where: {
+        invoiceId: id,
+        status: "SUCCESS",
+      },
+      _sum: {
+        amount: true,
+      },
+    });
+
+    const alreadyPaid = previousPayments._sum.amount ?? 0;
+    const remaining = invoice.amount - alreadyPaid;
+
+    // Éviter de déclarer payée une facture dont les paiements
+    // enregistrés dépassent déjà le montant facturé.
+    if (remaining < 0) {
+      throw new Error(
+        "Les règlements existants dépassent le montant de cette facture. Vérifiez les écritures."
+      );
+    }
+
+    // Inscription d'un paiement manuel correspondant
+    // uniquement au solde restant.
+    if (remaining > 0) {
+      await tx.payment.create({
+        data: {
+          invoiceId: id,
+          provider: "MANUAL_ADMIN",
+          providerTxId: `MANUAL-${id}`,
+          amount: remaining,
+          status: "SUCCESS",
+        },
+      });
+    }
+  });
+
+  revalidatePath("/admin/invoices");
+  revalidatePath("/parent/invoices");
+  revalidatePath("/parent/dashboard");
+}
+
+async function deleteInvoice(formData: FormData) {
+  "use server";
+
+  await requireAdmin();
+
+  const id = getString(formData, "id");
+
+  // Suppression uniquement des factures non réglées
+  // et sans aucun paiement associé.
+  const result = await prisma.invoice.deleteMany({
+    where: {
+      id,
+      status: {
+        in: ["PENDING", "OVERDUE"],
+      },
+      payments: {
+        none: {},
+      },
+    },
+  });
+
+  if (result.count !== 1) {
+    throw new Error(
+      "Suppression impossible : facture introuvable, réglée ou liée à des paiements."
+    );
+  }
+
+  revalidatePath("/admin/invoices");
+  revalidatePath("/parent/invoices");
+}
+
+// ========================================
+// PAGE ADMIN FACTURATION
+// ========================================
 
 export default async function AdminInvoicesPage() {
+  const session = await auth();
 
-  // --- SERVER ACTIONS ---
-  async function createSingleInvoice(formData: FormData) {
-    "use server"
-    const studentId = formData.get("studentId") as string
-    const amount = parseFloat(formData.get("amount") as string)
-    const dueDate = new Date(formData.get("dueDate") as string)
-
-    const student = await prisma.student.findUnique({ where: { id: studentId } })
-    if (!student?.parentId) throw new Error("Cet élève n'a pas de parent lié. Va dans /admin/students d'abord.")
-
-    await prisma.invoice.create({
-      data: {
-        studentId,
-        parentId: student.parentId,
-        amount,
-        dueDate,
-        status: "PENDING"
-      }
-    })
-    revalidatePath("/admin/invoices")
+  if (!session?.user?.id) {
+    redirect("/login");
   }
 
-  async function createBulkInvoices(formData: FormData) {
-    "use server"
-    const classId = formData.get("classId") as string
-    const amount = parseFloat(formData.get("amount") as string)
-    const dueDate = new Date(formData.get("dueDate") as string)
-    const label = formData.get("label") as string // ex: Scolarité T1
+  const admin = await prisma.user.findUnique({
+    where: { id: session.user.id },
+    select: { role: true },
+  });
 
-    const students = await prisma.student.findMany({ where: { classId, parentId: { not: null } } })
-    if (students.length === 0) throw new Error("Aucun élève avec parent dans cette classe")
-
-    await prisma.invoice.createMany({
-      data: students.map(s => ({
-        studentId: s.id,
-        parentId: s.parentId!,
-        amount,
-        dueDate,
-        status: "PENDING" as const
-      }))
-    })
-    revalidatePath("/admin/invoices")
+  if (admin?.role !== "ADMIN") {
+    redirect("/dashboard");
   }
 
-  async function markPaid(formData: FormData) {
-    "use server"
-    const id = formData.get("id") as string
-    await prisma.invoice.update({ where: { id }, data: { status: "PAID" } })
-    revalidatePath("/admin/invoices")
-  }
+  const [invoices, students, classes, stats] =
+    await Promise.all([
+      prisma.invoice.findMany({
+        select: {
+          id: true,
+          amount: true,
+          dueDate: true,
+          status: true,
+          createdAt: true,
+          student: {
+            select: {
+              user: {
+                select: {
+                  name: true,
+                },
+              },
+              class: {
+                select: {
+                  name: true,
+                  level: true,
+                },
+              },
+            },
+          },
+          parent: {
+            select: {
+              name: true,
+              email: true,
+            },
+          },
+        },
+        orderBy: {
+          createdAt: "desc",
+        },
+        take: 50,
+      }),
 
-  async function deleteInvoice(formData: FormData) {
-    "use server"
-    const id = formData.get("id") as string
-    await prisma.invoice.delete({ where: { id } })
-    revalidatePath("/admin/invoices")
-  }
+      prisma.student.findMany({
+        where: {
+          parentId: { not: null },
+        },
+        select: {
+          id: true,
+          user: {
+            select: {
+              name: true,
+            },
+          },
+          parent: {
+            select: {
+              name: true,
+              email: true,
+            },
+          },
+        },
+        orderBy: {
+          user: {
+            name: "asc",
+          },
+        },
+      }),
 
-  // --- FETCH DES DONNÉES ---
-  const [invoices, students, classes, stats] = await Promise.all([
-    prisma.invoice.findMany({ 
-      include: { student: { include: { user: true, class: true } }, parent: true }, 
-      orderBy: { createdAt: "desc" }, 
-      take: 50 
-    }),
-    prisma.student.findMany({ 
-      include: { user: true, parent: true }, 
-      where: { parentId: { not: null } },
-      orderBy: { user: { name: 'asc' } }
-    }),
-    prisma.class.findMany({ orderBy: [ { level: 'asc' }, { name: 'asc' } ] }),
-    prisma.invoice.groupBy({ by: ["status"], _sum: { amount: true }, _count: true })
-  ])
+      prisma.class.findMany({
+        select: {
+          id: true,
+          name: true,
+          level: true,
+        },
+        orderBy: [
+          { level: "asc" },
+          { name: "asc" },
+        ],
+      }),
 
-  const totalImpaye = stats.find(s => s.status === "PENDING")?._sum.amount || 0
-  const totalPaye = stats.find(s => s.status === "PAID")?._sum.amount || 0
+      prisma.invoice.groupBy({
+        by: ["status"],
+        _sum: {
+          amount: true,
+        },
+        _count: true,
+      }),
+    ]);
+
+  const getTotal = (status: "PENDING" | "PAID" | "OVERDUE") =>
+    stats.find((item) => item.status === status)?._sum
+      .amount ?? 0;
+
+  const totalPaid = getTotal("PAID");
+  const totalUnpaid =
+    getTotal("PENDING") + getTotal("OVERDUE");
+
+  const paidCount =
+    stats.find((item) => item.status === "PAID")
+      ?._count ?? 0;
+
+  // Avec `_count: true`, Prisma retourne directement un number.
+  // Ne pas écrire `item._count._all` ici : erreur TS2339.
+  const totalCount = stats.reduce(
+    (sum, item) => sum + item._count,
+    0
+  );
 
   return (
-    <div className="space-y-8 animate-in fade-in duration-500 max-w-7xl mx-auto">
-      
-      {/* En-tête & KPIs */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 bg-slate-900/30 border border-slate-800 p-6 rounded-3xl">
-        <div>
-          <h1 className="text-2xl font-bold text-white flex items-center gap-2">
-            <FileText className="text-blue-400" /> Gestion de la Facturation
-          </h1>
-          <p className="text-sm text-slate-400 mt-1">Émettez et suivez les paiements des frais de scolarité.</p>
-        </div>
-        
-        <div className="flex gap-4">
-          <div className="bg-slate-900/80 border border-slate-800 px-5 py-3 rounded-2xl flex items-center gap-4">
-            <div className="w-10 h-10 rounded-full bg-emerald-500/10 flex items-center justify-center text-emerald-400">
-              <Wallet size={20} />
-            </div>
-            <div>
-              <div className="text-xs text-slate-500 font-bold uppercase tracking-wider">Total Encaissé</div>
-              <div className="text-lg font-extrabold text-white">{totalPaye.toLocaleString()} FCFA</div>
-            </div>
-          </div>
-          
-          <div className="bg-amber-500/10 border border-amber-500/20 px-5 py-3 rounded-2xl flex items-center gap-4 shadow-lg shadow-amber-500/5">
-            <div className="w-10 h-10 rounded-full bg-amber-500/20 flex items-center justify-center text-amber-400">
-              <AlertCircle size={20} />
-            </div>
-            <div>
-              <div className="text-xs text-amber-500/80 font-bold uppercase tracking-wider">Impayés</div>
-              <div className="text-lg font-extrabold text-amber-400">{totalImpaye.toLocaleString()} FCFA</div>
-            </div>
-          </div>
-        </div>
-      </div>
+    <main className="mx-auto max-w-7xl space-y-8 pb-12 text-slate-100">
+      {/* HEADER */}
+      <section className="relative overflow-hidden rounded-3xl border border-slate-800 bg-[#111e30] p-6 shadow-xl md:p-8">
+        <div className="pointer-events-none absolute -right-16 -top-20 h-64 w-64 rounded-full bg-teal-500/10 blur-3xl" />
 
-      {/* Formulaires de création */}
-      <div className="grid lg:grid-cols-2 gap-6">
-        
-        {/* BULK PAR CLASSE */}
-        <div className="bg-slate-900/50 border border-slate-800 rounded-3xl p-6 backdrop-blur-xl shadow-2xl relative overflow-hidden">
-          <div className="absolute -right-10 -top-10 w-40 h-40 bg-blue-500/10 rounded-full blur-[60px] pointer-events-none" />
-          <h2 className="text-sm font-bold text-white uppercase tracking-wider mb-5 flex items-center gap-2">
-            <Users size={16} className="text-blue-400" /> Facturation en masse (Par Classe)
-          </h2>
-          <form action={createBulkInvoices} className="space-y-4 relative z-10">
-            <div className="grid grid-cols-2 gap-4">
-              <select name="classId" required className="bg-slate-950 border border-slate-800 text-white p-3 rounded-xl text-sm focus:border-blue-500 focus:ring-1 outline-none appearance-none">
-                <option value="">Sélectionner la classe...</option>
-                {classes.map(c => <option key={c.id} value={c.id}>{c.name} ({c.level})</option>)}
+        <div className="relative flex flex-col gap-6 xl:flex-row xl:items-center xl:justify-between">
+          <div>
+            <div className="mb-4 inline-flex items-center gap-2 rounded-full border border-teal-500/20 bg-teal-500/10 px-3 py-1.5 text-xs font-semibold text-teal-300">
+              <ShieldCheck size={14} />
+              Administration financière
+            </div>
+
+            <h1 className="flex items-center gap-3 text-2xl font-bold tracking-tight text-white md:text-3xl">
+              <ReceiptText className="h-8 w-8 text-teal-400" />
+              Gestion de la facturation
+            </h1>
+
+            <p className="mt-3 max-w-xl text-sm leading-relaxed text-slate-400">
+              Créez les factures scolaires, consultez les
+              échéances et suivez les règlements des familles.
+              Les règlements manuels sont enregistrés dans
+              l'historique des paiements.
+            </p>
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="rounded-2xl border border-teal-500/20 bg-teal-500/10 p-4">
+              <div className="mb-3 flex items-center gap-2 text-teal-300">
+                <Wallet size={18} />
+                <span className="text-xs font-semibold uppercase tracking-wider">
+                  Factures réglées
+                </span>
+              </div>
+
+              <p className="text-xl font-bold text-white">
+                {formatMoney(totalPaid)}
+              </p>
+
+              <p className="mt-1 text-xs text-teal-200/70">
+                {paidCount} facture(s) marquée(s) payée(s)
+              </p>
+            </div>
+
+            <div className="rounded-2xl border border-amber-500/20 bg-amber-500/10 p-4">
+              <div className="mb-3 flex items-center gap-2 text-amber-300">
+                <AlertCircle size={18} />
+                <span className="text-xs font-semibold uppercase tracking-wider">
+                  Factures à régler
+                </span>
+              </div>
+
+              <p className="text-xl font-bold text-white">
+                {formatMoney(totalUnpaid)}
+              </p>
+
+              <p className="mt-1 text-xs text-amber-200/70">
+                En attente ou en retard
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* STATISTIQUES */}
+      <section className="grid gap-4 sm:grid-cols-3">
+        <StatCard
+          icon={<FileText size={19} />}
+          label="Factures émises"
+          value={String(totalCount)}
+          description="Nombre total de factures"
+        />
+
+        <StatCard
+          icon={<GraduationCap size={19} />}
+          label="Élèves facturables"
+          value={String(students.length)}
+          description="Avec un parent associé"
+        />
+
+        <StatCard
+          icon={<Users size={19} />}
+          label="Classes"
+          value={String(classes.length)}
+          description="Classes disponibles"
+        />
+      </section>
+
+      {/* FORMULAIRES */}
+      <section className="grid gap-6 lg:grid-cols-2">
+        {/* FACTURATION PAR CLASSE */}
+        <div className="rounded-3xl border border-slate-800 bg-[#111e30] p-6 shadow-xl">
+          <div className="mb-6 flex items-center gap-3">
+            <div className="rounded-xl bg-teal-500/10 p-3 text-teal-400">
+              <Users size={21} />
+            </div>
+
+            <div>
+              <h2 className="font-bold text-white">
+                Facturation par classe
+              </h2>
+              <p className="mt-1 text-xs text-slate-400">
+                Une facture pour chaque élève avec parent
+              </p>
+            </div>
+          </div>
+
+          <form
+            action={createBulkInvoices}
+            className="space-y-4"
+          >
+            <div>
+              <label
+                htmlFor="bulk-class"
+                className="mb-2 block text-xs font-semibold text-slate-300"
+              >
+                Classe concernée
+              </label>
+
+              <select
+                id="bulk-class"
+                name="classId"
+                required
+                defaultValue=""
+                className={inputClass}
+              >
+                <option value="" disabled>
+                  Sélectionner une classe
+                </option>
+
+                {classes.map((schoolClass) => (
+                  <option
+                    key={schoolClass.id}
+                    value={schoolClass.id}
+                  >
+                    {schoolClass.name} — {schoolClass.level}
+                  </option>
+                ))}
               </select>
-              <input name="label" placeholder="Libellé (ex: Scolarité T1)" className="bg-slate-950 border border-slate-800 text-white p-3 rounded-xl text-sm focus:border-blue-500 focus:ring-1 outline-none" required />
             </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div className="relative">
-                <Banknote size={16} className="absolute left-3 top-3.5 text-slate-500" />
-                <input name="amount" type="number" placeholder="Montant unitaire (FCFA)" required className="w-full bg-slate-950 border border-slate-800 text-white p-3 pl-10 rounded-xl text-sm focus:border-blue-500 focus:ring-1 outline-none" />
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div>
+                <label
+                  htmlFor="bulk-amount"
+                  className="mb-2 block text-xs font-semibold text-slate-300"
+                >
+                  Montant unitaire
+                </label>
+
+                <div className="relative">
+                  <Banknote
+                    size={17}
+                    className="absolute left-3 top-3.5 text-slate-500"
+                  />
+
+                  <input
+                    id="bulk-amount"
+                    name="amount"
+                    type="number"
+                    min="1"
+                    max="1000000000"
+                    step="1"
+                    required
+                    placeholder="Montant FCFA"
+                    className={`${inputClass} pl-10`}
+                  />
+                </div>
               </div>
-              <div className="relative">
-                <Calendar size={16} className="absolute left-3 top-3.5 text-slate-500" />
-                <input name="dueDate" type="date" required className="w-full bg-slate-950 border border-slate-800 text-white p-3 pl-10 rounded-xl text-sm focus:border-blue-500 focus:ring-1 outline-none [color-scheme:dark]" />
+
+              <div>
+                <label
+                  htmlFor="bulk-due"
+                  className="mb-2 block text-xs font-semibold text-slate-300"
+                >
+                  Date d'échéance
+                </label>
+
+                <div className="relative">
+                  <CalendarDays
+                    size={17}
+                    className="absolute left-3 top-3.5 text-slate-500"
+                  />
+
+                  <input
+                    id="bulk-due"
+                    name="dueDate"
+                    type="date"
+                    required
+                    className={`${inputClass} pl-10 [color-scheme:dark]`}
+                  />
+                </div>
               </div>
             </div>
-            <button className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold p-3 rounded-xl transition-all shadow-lg shadow-blue-600/20 flex items-center justify-center gap-2">
-              <Plus size={18} /> Générer pour toute la classe
+
+            <p className="rounded-xl border border-slate-800 bg-[#08111f] p-3 text-xs leading-relaxed text-slate-400">
+              Chaque élève ayant un parent associé recevra
+              une facture distincte. Les factures identiques
+              déjà enregistrées (élève, montant et échéance)
+              seront ignorées. Vérifiez les informations
+              avant de générer le lot.
+            </p>
+
+            <button
+              type="submit"
+              disabled={classes.length === 0}
+              className="flex w-full items-center justify-center gap-2 rounded-xl bg-teal-500 px-5 py-3.5 text-sm font-bold text-slate-950 transition hover:bg-teal-400 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Plus size={18} />
+              Générer les factures
             </button>
           </form>
         </div>
 
-        {/* SINGLE */}
-        <div className="bg-slate-900/50 border border-slate-800 rounded-3xl p-6 backdrop-blur-xl shadow-2xl relative overflow-hidden">
-          <div className="absolute -right-10 -top-10 w-40 h-40 bg-purple-500/10 rounded-full blur-[60px] pointer-events-none" />
-          <h2 className="text-sm font-bold text-white uppercase tracking-wider mb-5 flex items-center gap-2">
-            <User size={16} className="text-purple-400" /> Facture unitaire
-          </h2>
-          <form action={createSingleInvoice} className="space-y-4 relative z-10">
-            <select name="studentId" required className="w-full bg-slate-950 border border-slate-800 text-white p-3 rounded-xl text-sm focus:border-purple-500 focus:ring-1 outline-none appearance-none">
-              <option value="">Sélectionner l'élève...</option>
-              {students.map(s => <option key={s.id} value={s.id}>{s.user.name} - Parent: {s.parent?.email}</option>)}
-            </select>
-            <div className="grid grid-cols-2 gap-4">
-              <div className="relative">
-                <Banknote size={16} className="absolute left-3 top-3.5 text-slate-500" />
-                <input name="amount" type="number" placeholder="Montant (FCFA)" required className="w-full bg-slate-950 border border-slate-800 text-white p-3 pl-10 rounded-xl text-sm focus:border-purple-500 focus:ring-1 outline-none" />
+        {/* FACTURATION INDIVIDUELLE */}
+        <div className="rounded-3xl border border-slate-800 bg-[#111e30] p-6 shadow-xl">
+          <div className="mb-6 flex items-center gap-3">
+            <div className="rounded-xl bg-sky-500/10 p-3 text-sky-400">
+              <UserRound size={21} />
+            </div>
+
+            <div>
+              <h2 className="font-bold text-white">
+                Facture individuelle
+              </h2>
+              <p className="mt-1 text-xs text-slate-400">
+                Facturer un élève particulier
+              </p>
+            </div>
+          </div>
+
+          <form
+            action={createSingleInvoice}
+            className="space-y-4"
+          >
+            <div>
+              <label
+                htmlFor="single-student"
+                className="mb-2 block text-xs font-semibold text-slate-300"
+              >
+                Élève
+              </label>
+
+              <select
+                id="single-student"
+                name="studentId"
+                required
+                defaultValue=""
+                className={inputClass}
+              >
+                <option value="" disabled>
+                  Sélectionner un élève
+                </option>
+
+                {students.map((student) => (
+                  <option
+                    key={student.id}
+                    value={student.id}
+                  >
+                    {student.user.name ?? "Élève sans nom"} —{" "}
+                    {student.parent?.name ??
+                      student.parent?.email ??
+                      "Parent"}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div>
+                <label
+                  htmlFor="single-amount"
+                  className="mb-2 block text-xs font-semibold text-slate-300"
+                >
+                  Montant
+                </label>
+
+                <div className="relative">
+                  <Banknote
+                    size={17}
+                    className="absolute left-3 top-3.5 text-slate-500"
+                  />
+
+                  <input
+                    id="single-amount"
+                    name="amount"
+                    type="number"
+                    min="1"
+                    max="1000000000"
+                    step="1"
+                    required
+                    placeholder="Montant FCFA"
+                    className={`${inputClass} pl-10`}
+                  />
+                </div>
               </div>
-              <div className="relative">
-                <Calendar size={16} className="absolute left-3 top-3.5 text-slate-500" />
-                <input name="dueDate" type="date" required className="w-full bg-slate-950 border border-slate-800 text-white p-3 pl-10 rounded-xl text-sm focus:border-purple-500 focus:ring-1 outline-none [color-scheme:dark]" />
+
+              <div>
+                <label
+                  htmlFor="single-due"
+                  className="mb-2 block text-xs font-semibold text-slate-300"
+                >
+                  Date d'échéance
+                </label>
+
+                <div className="relative">
+                  <CalendarDays
+                    size={17}
+                    className="absolute left-3 top-3.5 text-slate-500"
+                  />
+
+                  <input
+                    id="single-due"
+                    name="dueDate"
+                    type="date"
+                    required
+                    className={`${inputClass} pl-10 [color-scheme:dark]`}
+                  />
+                </div>
               </div>
             </div>
-            <button className="w-full bg-white hover:bg-slate-200 text-black font-bold p-3 rounded-xl transition-all shadow-lg flex items-center justify-center gap-2 mt-auto">
-              <Plus size={18} /> Créer la facture
+
+            <p className="rounded-xl border border-slate-800 bg-[#08111f] p-3 text-xs leading-relaxed text-slate-400">
+              La facture sera liée automatiquement au parent
+              actuellement associé à cet élève.
+            </p>
+
+            <button
+              type="submit"
+              disabled={students.length === 0}
+              className="flex w-full items-center justify-center gap-2 rounded-xl border border-slate-700 bg-white px-5 py-3.5 text-sm font-bold text-[#08111f] transition hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Plus size={18} />
+              Créer la facture
             </button>
           </form>
         </div>
+      </section>
 
-      </div>
+      {/* TABLEAU */}
+      <section className="overflow-hidden rounded-3xl border border-slate-800 bg-[#111e30] shadow-xl">
+        <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-800 px-6 py-5">
+          <div>
+            <h2 className="flex items-center gap-2 text-base font-bold text-white">
+              <FileText size={19} className="text-teal-400" />
+              Factures récentes
+            </h2>
 
-      {/* LISTE DES FACTURES */}
-      <div className="bg-slate-900/50 border border-slate-800 rounded-3xl overflow-hidden backdrop-blur-xl shadow-2xl">
-        <div className="p-5 border-b border-slate-800 flex justify-between items-center bg-slate-900/80">
-          <span className="font-bold text-white">Factures récentes</span>
-          <span className="bg-slate-800 text-slate-400 px-3 py-1 rounded-full text-xs font-semibold">
-            {invoices.length} affichées
+            <p className="mt-1 text-xs text-slate-500">
+              Les 50 dernières factures émises
+            </p>
+          </div>
+
+          <span className="rounded-full border border-slate-700 bg-slate-800/70 px-3 py-1.5 text-xs font-medium text-slate-300">
+            {invoices.length} affichée(s)
           </span>
         </div>
 
         <div className="overflow-x-auto">
-          <table className="w-full text-sm text-left">
-            <thead className="bg-slate-900/40 text-slate-400 text-xs uppercase tracking-wider border-b border-slate-800">
+          <table className="w-full min-w-[900px] text-left text-sm">
+            <thead className="border-b border-slate-800 bg-[#0b1626] text-xs uppercase tracking-wider text-slate-500">
               <tr>
-                <th className="p-4 font-semibold">Élève & Classe</th>
-                <th className="p-4 font-semibold">Parent Associé</th>
-                <th className="p-4 font-semibold">Montant</th>
-                <th className="p-4 font-semibold">Échéance</th>
-                <th className="p-4 font-semibold">Statut</th>
-                <th className="p-4 font-semibold text-right">Actions</th>
+                <th className="px-5 py-4 font-semibold">
+                  Élève / Classe
+                </th>
+                <th className="px-5 py-4 font-semibold">
+                  Parent
+                </th>
+                <th className="px-5 py-4 font-semibold">
+                  Montant
+                </th>
+                <th className="px-5 py-4 font-semibold">
+                  Échéance
+                </th>
+                <th className="px-5 py-4 font-semibold">
+                  Statut
+                </th>
+                <th className="px-5 py-4 text-right font-semibold">
+                  Actions
+                </th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-800/60">
+
+            <tbody className="divide-y divide-slate-800/70">
               {invoices.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="p-12 text-center text-slate-500">
-                    <FileText className="mx-auto mb-3 opacity-20" size={32} />
-                    Aucune facture émise pour le moment.
+                  <td colSpan={6} className="px-5 py-16 text-center">
+                    <ReceiptText
+                      size={40}
+                      className="mx-auto mb-4 text-slate-700"
+                    />
+
+                    <p className="font-semibold text-slate-300">
+                      Aucune facture pour le moment
+                    </p>
+
+                    <p className="mt-2 text-xs text-slate-500">
+                      Utilisez les formulaires ci-dessus
+                      pour créer votre première facture.
+                    </p>
                   </td>
                 </tr>
               ) : (
-                invoices.map(inv => (
-                  <tr key={inv.id} className="hover:bg-slate-800/40 transition-colors group">
-                    <td className="p-4">
-                      <div className="font-bold text-white">{inv.student.user.name || "N/A"}</div>
-                      <div className="text-xs text-slate-500 mt-0.5">{inv.student.class.name}</div>
-                    </td>
-                    <td className="p-4 text-slate-300">{inv.parent.email}</td>
-                    <td className="p-4 font-bold text-white">{inv.amount.toLocaleString()} <span className="text-slate-500 text-xs font-normal">FCFA</span></td>
-                    <td className="p-4 text-slate-400">{new Date(inv.dueDate).toLocaleDateString()}</td>
-                    <td className="p-4">
-                      {inv.status === "PAID" && <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-extrabold tracking-wide uppercase bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">Payé</span>}
-                      {inv.status === "PENDING" && <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-extrabold tracking-wide uppercase bg-amber-500/10 text-amber-400 border border-amber-500/20">En attente</span>}
-                      {inv.status === "OVERDUE" && <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-extrabold tracking-wide uppercase bg-red-500/10 text-red-400 border border-red-500/20">En retard</span>}
-                    </td>
-                    <td className="p-4">
-                      <div className="flex items-center justify-end gap-2">
-                        {inv.status !== "PAID" && (
-                          <form action={markPaid}>
-                            <input type="hidden" name="id" value={inv.id} />
-                            <button type="submit" title="Marquer comme payé" className="text-slate-500 hover:text-emerald-400 p-2 rounded-lg hover:bg-emerald-500/10 transition-colors inline-flex">
-                              <CheckCircle size={18} />
-                            </button>
-                          </form>
+                invoices.map((invoice) => {
+                  const isPaid = invoice.status === "PAID";
+
+                  const isOverdue =
+                    invoice.status === "OVERDUE" ||
+                    (!isPaid &&
+                      invoice.dueDate
+                        .toISOString()
+                        .slice(0, 10) <
+                        new Date()
+                          .toISOString()
+                          .slice(0, 10));
+
+                  return (
+                    <tr
+                      key={invoice.id}
+                      className="transition hover:bg-white/[0.025]"
+                    >
+                      <td className="px-5 py-4">
+                        <p className="font-semibold text-white">
+                          {invoice.student.user.name ??
+                            "Élève sans nom"}
+                        </p>
+
+                        <p className="mt-1 text-xs text-slate-500">
+                          {invoice.student.class.name} —{" "}
+                          {invoice.student.class.level}
+                        </p>
+                      </td>
+
+                      <td className="px-5 py-4">
+                        <p className="font-medium text-slate-300">
+                          {invoice.parent.name ?? "Parent"}
+                        </p>
+
+                        <p className="mt-1 text-xs text-slate-500">
+                          {invoice.parent.email ??
+                            "Aucun email"}
+                        </p>
+                      </td>
+
+                      <td className="px-5 py-4">
+                        <span className="font-bold text-white">
+                          {formatMoney(invoice.amount)}
+                        </span>
+                      </td>
+
+                      <td className="px-5 py-4 text-slate-300">
+                        {invoice.dueDate.toLocaleDateString(
+                          "fr-FR",
+                          { timeZone: "UTC" }
                         )}
-                        <form action={deleteInvoice}>
-                          <input type="hidden" name="id" value={inv.id} />
-                          <button type="submit" title="Supprimer la facture" className="text-slate-500 hover:text-red-400 p-2 rounded-lg hover:bg-red-500/10 transition-colors inline-flex">
-                            <Trash2 size={18} />
-                          </button>
-                        </form>
-                      </div>
-                    </td>
-                  </tr>
-                ))
+                      </td>
+
+                      <td className="px-5 py-4">
+                        {isPaid ? (
+                          <StatusBadge status="PAID" />
+                        ) : isOverdue ? (
+                          <StatusBadge status="OVERDUE" />
+                        ) : (
+                          <StatusBadge status="PENDING" />
+                        )}
+                      </td>
+
+                      <td className="px-5 py-4">
+                        <div className="flex items-center justify-end gap-2">
+                          {!isPaid && (
+                            <form action={markPaid}>
+                              <input
+                                type="hidden"
+                                name="id"
+                                value={invoice.id}
+                              />
+
+                              <InvoiceActionButton type="paid" />
+                            </form>
+                          )}
+
+                          {!isPaid && (
+                            <form action={deleteInvoice}>
+                              <input
+                                type="hidden"
+                                name="id"
+                                value={invoice.id}
+                              />
+
+                              <InvoiceActionButton type="delete" />
+                            </form>
+                          )}
+
+                          {isPaid && (
+                            <span className="inline-flex items-center gap-1 text-xs text-teal-400">
+                              <ArrowUpRight size={14} />
+                              Réglée
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })
               )}
             </tbody>
           </table>
         </div>
+      </section>
+    </main>
+  );
+}
+
+// ========================================
+// UI COMPONENTS
+// ========================================
+
+function StatCard({
+  icon,
+  label,
+  value,
+  description,
+}: {
+  icon: ReactNode;
+  label: string;
+  value: string;
+  description: string;
+}) {
+  return (
+    <div className="rounded-2xl border border-slate-800 bg-[#111e30] p-5">
+      <div className="mb-4 flex items-center justify-between">
+        <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">
+          {label}
+        </span>
+
+        <span className="rounded-lg bg-teal-500/10 p-2 text-teal-400">
+          {icon}
+        </span>
       </div>
 
+      <p className="text-2xl font-bold text-white">{value}</p>
+
+      <p className="mt-2 text-xs text-slate-500">
+        {description}
+      </p>
     </div>
-  )
+  );
+}
+
+function StatusBadge({
+  status,
+}: {
+  status: "PAID" | "PENDING" | "OVERDUE";
+}) {
+  const config = {
+    PAID: {
+      label: "Payée",
+      style:
+        "border-teal-500/20 bg-teal-500/10 text-teal-300",
+    },
+    PENDING: {
+      label: "En attente",
+      style:
+        "border-amber-500/20 bg-amber-500/10 text-amber-300",
+    },
+    OVERDUE: {
+      label: "En retard",
+      style:
+        "border-red-500/20 bg-red-500/10 text-red-400",
+    },
+  }[status];
+
+  return (
+    <span
+      className={`inline-flex rounded-lg border px-2.5 py-1 text-[11px] font-bold ${config.style}`}
+    >
+      {config.label}
+    </span>
+  );
 }
