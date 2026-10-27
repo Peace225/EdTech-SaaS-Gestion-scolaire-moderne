@@ -1,160 +1,138 @@
 // src/app/student/assignments/online/[id]/page.tsx
-"use client"
+import Link from "next/link";
+import { notFound, redirect } from "next/navigation";
+import { auth } from "@/auth";
+import { prisma } from "@/lib/prisma";
+import { finalizeOnlineAttempt } from "@/lib/online-homework";
+import { startOnlineHomeworkAction } from "../actions";
+import OnlineExamClient from "./OnlineExamClient";
+import { ArrowLeft, AlertCircle, CheckCircle2, ClipboardCheck, Clock3, ShieldCheck, Sparkles } from "lucide-react";
 
-import { useState, useEffect } from "react"
-import { useParams, useRouter } from "next/navigation"
-import { Clock, ShieldAlert, Sparkles, Send, CheckCircle2 } from "lucide-react"
+export const dynamic = "force-dynamic";
 
-export default function OnlineAssignmentPage() {
-  const params = useParams()
-  const router = useRouter()
-  const id = params?.id
+type Props = {
+  params: Promise<{ id: string }>;
+  searchParams: Promise<{ notice?: string }>;
+};
 
-  // 30 minutes de temps imparti (en secondes)
-  const [timeLeft, setTimeLeft] = useState(30 * 60)
-  const [isSubmitted, setIsSubmitted] = useState(false)
-  const [answers, setAnswers] = useState<{ [key: number]: string }>({})
+export default async function OnlineAssignmentPage({ params, searchParams }: Props) {
+  const { id } = await params;
+  const { notice } = await searchParams;
+  if (!id || id.length > 150) notFound();
 
-  // Gestion du chronomètre en direct
-  useEffect(() => {
-    if (timeLeft <= 0) {
-      handleSubmit()
-      return
-    }
+  const session = await auth();
+  if (!session?.user?.id) redirect("/login");
 
-    const timer = setInterval(() => {
-      setTimeLeft((prev) => prev - 1)
-    }, 1000)
-
-    return () => clearInterval(timer)
-  }, [timeLeft])
-
-  const formatTime = (seconds: number) => {
-    const mins = Math.floor(seconds / 60)
-    const secs = seconds % 60
-    return `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`
-  }
-
-  const handleSubmit = () => {
-    setIsSubmitted(true)
-    // Ici, tu pourras ajouter un appel fetch vers ton API pour enregistrer les réponses
-  }
-
-  // Questions de démonstration pour le test en ligne
-  const questions = [
-    {
-      id: 1,
-      question: "Soit (u_n) une suite arithmétique de premier terme u_0 = 2 et de raison r = 3. Quelle est la valeur de u_4 ?",
-      options: ["11", "14", "12", "15"]
+  const account = await prisma.user.findUnique({
+    where: { id: session.user.id },
+    select: {
+      role: true,
+      studentProfile: { select: { id: true, classId: true, class: { select: { name: true, educationType: true } } } },
     },
-    {
-      id: 2,
-      question: "Quelle est la limite de la suite q^n lorsque n tend vers + lointain si -1 < q < 1 ?",
-      options: ["0", "1", "+ l'infini", "- l'infini"]
-    }
-  ]
+  });
+  if (account?.role !== "STUDENT" || !account.studentProfile) redirect("/student/assignments");
+  const student = account.studentProfile;
+
+  const homework = await prisma.homework.findFirst({
+    where: {
+      id,
+      type: "ONLINE",
+      status: "PUBLISHED",
+      assignment: { is: { classId: student.classId } },
+    },
+    select: {
+      id: true,
+      title: true,
+      instructions: true,
+      dueDate: true,
+      durationMinutes: true,
+      assignment: { select: { subject: true, teacher: { select: { name: true } } } },
+      onlineQuestions: {
+        select: { id: true, position: true, prompt: true, optionA: true, optionB: true, optionC: true, optionD: true, points: true },
+        orderBy: { position: "asc" },
+      },
+      onlineAttempts: {
+        where: { studentId: student.id },
+        take: 1,
+        select: {
+          id: true,
+          startedAt: true,
+          expiresAt: true,
+          submittedAt: true,
+          answers: { select: { questionId: true, choice: true } },
+        },
+      },
+    },
+  });
+  if (!homework) notFound();
+
+  let attempt = homework.onlineAttempts[0];
+  const serverNow = Date.now();
+
+  // Lorsqu'il revient après expiration, la copie est clôturée une seule fois.
+  // La note reste interne : publication des notes officielles via l'administration.
+  if (attempt && !attempt.submittedAt && attempt.expiresAt.getTime() <= serverNow) {
+    await finalizeOnlineAttempt(attempt.id, student.id);
+    attempt = {
+      ...attempt,
+      submittedAt: (await prisma.onlineHomeworkAttempt.findUnique({
+        where: { id: attempt.id },
+        select: { submittedAt: true },
+      }))?.submittedAt ?? new Date(),
+    };
+  }
+
+  const isProfessional = student.class.educationType === "PROFESSIONAL";
+  const isClosed = Boolean(homework.dueDate && homework.dueDate.getTime() <= serverNow);
+  const canStart = !isClosed && homework.durationMinutes !== null && homework.durationMinutes >= 1 && homework.durationMinutes <= 240 && homework.onlineQuestions.length > 0;
 
   return (
-    <div className="space-y-8 animate-in fade-in duration-500 max-w-5xl mx-auto pb-16 relative text-white">
-      
-      {/* Effets lumineux d'arrière-plan */}
-      <div className="absolute top-0 right-1/4 w-96 h-96 bg-amber-600/10 rounded-full blur-[120px] pointer-events-none" />
-      <div className="absolute top-1/3 left-10 w-80 h-80 bg-rose-600/10 rounded-full blur-[100px] pointer-events-none" />
+    <section className="mx-auto max-w-5xl space-y-6 pb-12 text-slate-100">
+      <Link href="/student/assignments" className="inline-flex items-center gap-2 text-sm font-semibold text-slate-400 transition hover:text-white"><ArrowLeft size={16} /> Retour aux devoirs</Link>
 
-      {/* En-tête Chrono & Titre */}
-      <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-6 bg-slate-900/40 border border-slate-800/80 p-6 md:p-8 rounded-3xl backdrop-blur-2xl shadow-2xl">
-        <div className="space-y-2">
-          <div className="inline-flex items-center gap-2 bg-amber-500/10 border border-amber-500/20 text-amber-400 px-3.5 py-1.5 rounded-full text-xs font-semibold">
-            <Sparkles size={14} /> Composition en Ligne • Session Sécurisée
-          </div>
-          <h1 className="text-2xl md:text-3xl font-extrabold tracking-tight">
-            Interrogation : Suites & Limites
-          </h1>
-          <p className="text-xs text-slate-400">
-            Restez connecté et actif sur cette page jusqu'à la fin de la composition.
-          </p>
-        </div>
+      <header className="rounded-3xl border border-slate-800 bg-[#111e30] p-6 shadow-xl sm:p-8">
+        <p className="mb-3 inline-flex items-center gap-2 rounded-full border border-amber-500/20 bg-amber-500/10 px-3 py-1.5 text-xs font-bold text-amber-300"><Sparkles size={14} /> {isProfessional ? "Évaluation de formation" : "Composition en ligne"}</p>
+        <h1 className="text-2xl font-extrabold tracking-tight text-white sm:text-3xl">{homework.title}</h1>
+        <p className="mt-2 text-sm text-slate-400">{homework.assignment.subject} · {isProfessional ? "Formateur" : "Enseignant"} : {homework.assignment.teacher.name || "Non renseigné"}</p>
+        <div className="mt-5 whitespace-pre-wrap break-words rounded-xl border border-slate-800 bg-slate-950/60 p-4 text-sm leading-relaxed text-slate-300">{homework.instructions}</div>
+      </header>
 
-        {/* Chronomètre Visuel */}
-        <div className={`px-6 py-4 rounded-2xl flex items-center gap-3 backdrop-blur-md border ${
-          timeLeft < 300 ? "bg-red-500/10 border-red-500/30 text-red-400 animate-pulse" : "bg-slate-950/80 border-slate-800 text-amber-400"
-        }`}>
-          <Clock size={24} />
-          <div>
-            <p className="text-[10px] uppercase tracking-wider text-slate-400 font-bold">Temps Restant</p>
-            <p className="text-xl font-mono font-extrabold">{formatTime(timeLeft)}</p>
-          </div>
+      {attempt?.submittedAt ? (
+        <div role="status" className="rounded-3xl border border-emerald-500/20 bg-emerald-500/10 p-8 text-center sm:p-12">
+          <CheckCircle2 className="mx-auto text-emerald-400" size={48} />
+          <h2 className="mt-5 text-xl font-extrabold text-white">Composition enregistrée</h2>
+          <p className="mx-auto mt-3 max-w-lg text-sm leading-relaxed text-slate-300">Votre copie est clôturée et enregistrée. Les résultats de cette évaluation restent internes jusqu'à leur publication par l'établissement.</p>
+          <Link href="/student/assignments" className="mt-6 inline-flex rounded-xl bg-teal-500 px-5 py-3 text-sm font-bold text-[#06211f] hover:bg-teal-400">Retour à mes devoirs</Link>
         </div>
-      </div>
-
-      {isSubmitted ? (
-        <div className="bg-slate-900/40 border border-slate-800/80 rounded-3xl p-12 text-center space-y-6 backdrop-blur-xl shadow-2xl relative z-10">
-          <div className="w-20 h-20 bg-emerald-500/10 text-emerald-400 rounded-full flex items-center justify-center mx-auto border border-emerald-500/20">
-            <CheckCircle2 size={40} />
-          </div>
-          <h2 className="text-2xl font-bold">Devoir soumis avec succès !</h2>
-          <p className="text-slate-400 text-sm max-w-md mx-auto">
-            Vos réponses ont été enregistrées et transmises à votre enseignant. Vous pouvez fermer cette page ou retourner à l'accueil.
-          </p>
-          <button 
-            onClick={() => router.push("/student/assignments")}
-            className="bg-white hover:bg-slate-200 text-black px-6 py-3 rounded-2xl text-xs font-bold transition-all shadow-lg cursor-pointer"
-          >
-            Retour aux devoirs
-          </button>
-        </div>
+      ) : attempt ? (
+        <OnlineExamClient
+          key={attempt.id}
+          attemptId={attempt.id}
+          homeworkTitle={homework.title}
+          questions={homework.onlineQuestions}
+          initialAnswers={Object.fromEntries(attempt.answers.filter((a) => ["A", "B", "C", "D"].includes(a.choice)).map((a) => [a.questionId, a.choice as "A" | "B" | "C" | "D"]))}
+          expiresAt={attempt.expiresAt.toISOString()}
+          serverNow={serverNow}
+          initialSeconds={Math.max(0, Math.ceil((attempt.expiresAt.getTime() - serverNow) / 1000))}
+        />
       ) : (
-        <div className="space-y-6 relative z-10">
-          
-          {/* Avertissement de sécurité */}
-          <div className="bg-amber-500/10 border border-amber-500/20 p-4 rounded-2xl flex items-center gap-3 text-xs text-amber-300">
-            <ShieldAlert size={20} className="shrink-0" />
-            <span>Ne changez pas d'onglet et ne fermez pas la page. Toute inactivité prolongée entraînera une soumission automatique.</span>
+        <div className="space-y-5 rounded-3xl border border-slate-800 bg-[#111e30] p-6 sm:p-8">
+          <h2 className="text-xl font-bold text-white">Avant de commencer</h2>
+          <div className="grid gap-4 sm:grid-cols-3">
+            <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-4"><Clock3 className="mb-3 text-amber-400" size={23} /><p className="text-xs text-slate-400">Durée</p><p className="mt-1 font-bold text-white">{homework.durationMinutes ? `${homework.durationMinutes} minutes` : "À définir"}</p></div>
+            <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-4"><ClipboardCheck className="mb-3 text-teal-400" size={23} /><p className="text-xs text-slate-400">Questions</p><p className="mt-1 font-bold text-white">{homework.onlineQuestions.length} question(s)</p></div>
+            <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-4"><ShieldCheck className="mb-3 text-blue-400" size={23} /><p className="text-xs text-slate-400">Tentatives</p><p className="mt-1 font-bold text-white">1 seule tentative</p></div>
           </div>
-
-          {/* Questions du Devoir */}
-          <div className="space-y-6">
-            {questions.map((q, idx) => (
-              <div key={q.id} className="bg-slate-900/40 border border-slate-800/80 rounded-3xl p-6 md:p-8 backdrop-blur-xl shadow-2xl space-y-4">
-                <p className="font-bold text-white text-base">
-                  Question {idx + 1} : {q.question}
-                </p>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
-                  {q.options.map((opt, oIdx) => {
-                    const isSelected = answers[q.id] === opt
-                    return (
-                      <button
-                        key={oIdx}
-                        onClick={() => setAnswers({ ...answers, [q.id]: opt })}
-                        className={`p-4 rounded-2xl text-left text-xs font-medium transition-all border cursor-pointer ${
-                          isSelected 
-                            ? "bg-blue-600/20 border-blue-500 text-white shadow-lg" 
-                            : "bg-slate-950/80 border-slate-800/80 text-slate-300 hover:border-slate-700"
-                        }`}
-                      >
-                        {opt}
-                      </button>
-                    )
-                  })}
-                </div>
-              </div>
-            ))}
-          </div>
-
-          {/* Bouton de soumission finale */}
-          <div className="flex justify-end pt-4">
-            <button
-              onClick={handleSubmit}
-              className="bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white px-8 py-4 rounded-2xl text-sm font-extrabold transition-all flex items-center gap-2 shadow-xl shadow-emerald-600/20 cursor-pointer"
-            >
-              <Send size={18} /> Soumettre définitivement mes réponses
-            </button>
-          </div>
-
+          <p className="text-sm leading-relaxed text-slate-400">L'horloge démarre sur le serveur lorsque vous cliquez sur « Commencer ». Recharger la page ne remet pas le temps à zéro. Les réponses sont sauvegardées individuellement. Une fois votre copie remise, elle ne peut plus être modifiée.</p>
+          {(notice === "unavailable" || !canStart) && <p role="alert" className="flex items-start gap-2 rounded-xl border border-amber-500/20 bg-amber-500/10 p-4 text-sm text-amber-200"><AlertCircle className="mt-0.5 shrink-0" size={17} /> {isClosed ? "La date limite est dépassée." : "Cette composition n'est pas encore prête : les questions ou la durée sont à compléter par le formateur."}</p>}
+          {canStart && (
+            <form action={startOnlineHomeworkAction}>
+              <input type="hidden" name="homeworkId" value={homework.id} />
+              <button type="submit" className="inline-flex cursor-pointer items-center gap-2 rounded-xl bg-teal-500 px-6 py-3 text-sm font-extrabold text-[#06211f] transition hover:bg-teal-400"><Clock3 size={17} /> Commencer la composition</button>
+            </form>
+          )}
         </div>
       )}
-
-    </div>
-  )
+    </section>
+  );
 }

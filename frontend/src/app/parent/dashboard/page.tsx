@@ -1,196 +1,516 @@
 // src/app/parent/dashboard/page.tsx
-import { getParentStudents } from "@/lib/parent-security"
-import { getBulletin } from "@/lib/bulletin"
-import { PrintButton } from "@/components/PrintButton"
-import Link from "next/link"
+import { auth } from "@/auth";
+import { prisma } from "@/lib/prisma";
+import { notFound, redirect } from "next/navigation";
+import Link from "next/link";
 import {
-  Users, Award, ArrowRight,
-  Sparkles, GraduationCap, Clock, CheckCircle2, AlertTriangle, Wallet
-} from "lucide-react"
+  AlertTriangle,
+  ArrowRight,
+  Award,
+  BookOpen,
+  CalendarDays,
+  CheckCircle2,
+  Clock3,
+  FileText,
+  GraduationCap,
+  ShieldCheck,
+  Sparkles,
+  Users,
+  Wallet,
+} from "lucide-react";
 
-export const dynamic = "force-dynamic"
+export const dynamic = "force-dynamic";
 
-function getStudentName(child: any): string {
-  if (child.user?.name) return child.user.name
-  if (child.user?.email) return child.user.email.split('@')[0]
-  if (child.firstName && child.lastName) return `${child.firstName} ${child.lastName}`
-  if (child.firstName) return child.firstName
-  return "Élève"
+const moneyFormatter = new Intl.NumberFormat("fr-FR", {
+  style: "currency",
+  currency: "XOF", // À rendre configurable si l'établissement utilise une autre devise.
+  maximumFractionDigits: 0,
+});
+
+const scoreFormatter = new Intl.NumberFormat("fr-FR", {
+  maximumFractionDigits: 2,
+});
+
+const dateFormatter = new Intl.DateTimeFormat("fr-FR", {
+  day: "2-digit",
+  month: "short",
+  year: "numeric",
+  timeZone: "UTC",
+});
+
+// Un seul accès aux données des élèves, toujours limité au parent connecté.
+async function loadParentChildren(parentId: string) {
+  return prisma.student.findMany({
+    where: { parentId },
+    orderBy: { id: "asc" },
+    select: {
+      id: true,
+      classId: true,
+      user: { select: { name: true, email: true } },
+      class: {
+        select: { name: true, level: true, educationType: true },
+      },
+      // Les notes en attente et rejetées ne sont JAMAIS visibles côté parent.
+      grades: {
+        where: { status: "APPROVED" },
+        orderBy: [{ evaluationDate: "desc" }, { id: "desc" }],
+        take: 3,
+        select: {
+          id: true,
+          subject: true,
+          score: true,
+          term: true,
+        },
+      },
+      _count: {
+        select: {
+          absences: { where: { justified: false } },
+          grades: { where: { status: "APPROVED" } },
+        },
+      },
+      // Ne récupérer que les factures de CE parent et de CET enfant.
+      invoices: {
+        where: {
+          parentId,
+          status: { in: ["PENDING", "OVERDUE"] },
+        },
+        select: {
+          id: true,
+          status: true,
+          amount: true,
+          dueDate: true,
+        },
+      },
+    },
+  });
 }
 
-function formatFCFA(amount: number): string {
-  return new Intl.NumberFormat("fr-FR").format(amount)
+type ParentChild = Awaited<ReturnType<typeof loadParentChildren>>[number];
+
+type UpcomingHomework = {
+  id: string;
+  title: string;
+  type: "UPLOAD" | "ONLINE";
+  dueDate: Date | null;
+  assignment: { subject: string };
+};
+
+function studentName(child: ParentChild): string {
+  const name = child.user.name?.trim();
+  if (name) return name;
+  const localEmail = child.user.email?.split("@")[0];
+  return localEmail || "Apprenant";
 }
 
-// Carte SYNCHRONE - plus d'async ici
-function ChildDashboardCard({ child, bulletinT1 }: { child: any, bulletinT1: any }) {
-  const impayes: number = child.invoices
-    ? child.invoices.filter((i: any) => i.status === "PENDING").reduce((a: number, b: any) => a + Number(b.amount), 0)
-    : 0
+function initials(name: string): string {
+  return (
+    name
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((part) => part.charAt(0))
+      .join("")
+      .toLocaleUpperCase("fr-FR") || "A"
+  );
+}
 
-  const fullName = getStudentName(child)
-  const initials = fullName.split(' ').map((n: string) => n[0]).join('').substring(0, 2).toUpperCase()
+function isInvoiceLate(
+  invoice: ParentChild["invoices"][number],
+  now: Date,
+): boolean {
+  return (
+    invoice.status === "OVERDUE" ||
+    (invoice.status === "PENDING" && invoice.dueDate < now)
+  );
+}
 
-  const moyenneNum = parseFloat(bulletinT1?.moyenneGenerale ?? "0") || 0
-  const isGoodAverage = moyenneNum >= 12
-  const isAverage = moyenneNum >= 10 && moyenneNum < 12
+function SummaryCard({
+  icon: Icon,
+  label,
+  value,
+  detail,
+  accent = "text-sky-400",
+}: {
+  icon: typeof Users;
+  label: string;
+  value: string | number;
+  detail: string;
+  accent?: string;
+}) {
+  return (
+    <div className="rounded-2xl border border-slate-800/80 bg-slate-900/55 p-4 shadow-lg sm:p-5">
+      <div className="flex items-center gap-2 text-xs font-semibold text-slate-400">
+        <Icon size={16} className={accent} aria-hidden="true" />
+        {label}
+      </div>
+      <p className="mt-3 text-2xl font-extrabold tracking-tight text-white sm:text-3xl">
+        {value}
+      </p>
+      <p className="mt-1 text-xs text-slate-500">{detail}</p>
+    </div>
+  );
+}
+
+function ChildDashboardCard({
+  child,
+  nextHomework,
+  now,
+}: {
+  child: ParentChild;
+  nextHomework: UpcomingHomework[];
+  now: Date;
+}) {
+  const name = studentName(child);
+  const professional = child.class.educationType === "PROFESSIONAL";
+  const pendingInvoices = child.invoices.length;
+  const overdueCount = child.invoices.filter((invoice) =>
+    isInvoiceLate(invoice, now),
+  ).length;
+  const billedAmount = child.invoices.reduce(
+    (sum, invoice) => sum + invoice.amount,
+    0,
+  );
+  const unjustifiedAbsences = child._count.absences;
 
   return (
-    <div className="bg-slate-900/40 border border-slate-800/80 rounded-3xl p-6 md:p-8 backdrop-blur-xl shadow-2xl space-y-6 transition-all hover:border-slate-700">
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-800/80 pb-6">
-        <div className="flex items-center gap-4">
-          <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-blue-600 to-indigo-700 flex items-center justify-center text-white font-extrabold text-lg shadow-lg shadow-blue-600/20">
-            {initials}
+    <article className="relative overflow-hidden rounded-3xl border border-slate-800/80 bg-slate-900/50 p-5 shadow-xl backdrop-blur-xl sm:p-7">
+      <div className="flex flex-col gap-4 border-b border-slate-800 pb-5 md:flex-row md:items-center md:justify-between">
+        <div className="flex min-w-0 items-start gap-4">
+          <div
+            aria-hidden="true"
+            className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-sky-600 to-indigo-700 text-lg font-bold text-white"
+          >
+            {initials(name)}
           </div>
-          <div className="space-y-1">
-            <div className="flex items-center gap-3">
-              <h2 className="text-xl font-extrabold text-white">{fullName}</h2>
-              <span className="bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 px-3 py-0.5 rounded-full text-xs font-bold uppercase tracking-wide">
-                {child.class?.name || "Classe non assignée"}
+          <div className="min-w-0 space-y-2">
+            <h2 className="break-words text-lg font-extrabold text-white sm:text-xl">
+              {name}
+            </h2>
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <span className="rounded-full border border-indigo-500/25 bg-indigo-500/10 px-3 py-1 font-semibold text-indigo-300">
+                {professional ? "Formation" : "Classe"} : {child.class.name}
               </span>
+              <span className="text-slate-400">{child.class.level}</span>
             </div>
-            <p className="text-xs text-slate-400 flex items-center gap-2">
-              <span>Moyenne T1 : <strong className="text-white">{bulletinT1?.moyenneGenerale ?? "--"}/20</strong></span>
-              <span>•</span>
-              <span className={isGoodAverage ? "text-emerald-400 font-semibold" : isAverage ? "text-amber-400 font-semibold" : "text-red-400 font-semibold"}>
-                {bulletinT1?.mention || "En cours"}
-              </span>
-            </p>
           </div>
         </div>
-
         <Link
-          href={`/parent/child/${child.id}`}
-          className="bg-white hover:bg-slate-200 text-black px-5 py-3 rounded-2xl text-xs font-bold transition-all flex items-center justify-center gap-2 shadow-lg shadow-white/5 w-fit"
+          href={`/parent/child/${encodeURIComponent(child.id)}`}
+          className="inline-flex shrink-0 items-center justify-center gap-2 rounded-xl bg-white px-4 py-2.5 text-xs font-bold text-slate-950 transition hover:bg-slate-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400"
         >
-          <span>Dossier complet</span>
-          <ArrowRight size={16} />
+          Voir le dossier <ArrowRight size={15} aria-hidden="true" />
         </Link>
       </div>
 
-      <div className="grid md:grid-cols-3 gap-5">
-        <div className="bg-slate-950/80 border border-slate-800/80 p-5 rounded-2xl space-y-3">
-          <div className="flex items-center justify-between text-xs font-bold text-slate-400 uppercase tracking-wider">
-            <span className="flex items-center gap-1.5"><Award size={14} className="text-emerald-400" /> Dernières notes</span>
-            <span className="text-[10px] text-slate-500 font-normal">Évaluations T1</span>
-          </div>
-          <div className="space-y-2 pt-1">
-            {!child.grades || child.grades.length === 0 ? (
-              <p className="text-xs text-slate-600 italic py-2">Aucune note enregistrée.</p>
-            ) : (
-              child.grades.slice(0, 3).map((g: any) => {
-                const noteValue = g.value ?? g.score ?? 0
-                return (
-                  <div key={g.id} className="flex justify-between items-center text-xs bg-slate-900/60 p-2.5 rounded-xl border border-slate-800/60">
-                    <span className="text-slate-300 font-medium truncate max-w-[140px]">{g.subject}</span>
-                    <span className={`font-extrabold px-2 py-0.5 rounded-md border ${
-                      noteValue >= 12 ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20" :
-                      noteValue >= 10 ? "bg-amber-500/10 text-amber-400 border-amber-500/20" :
-                      "bg-red-500/10 text-red-400 border-red-500/20"
-                    }`}>
-                      {String(noteValue)} / 20
-                    </span>
-                  </div>
-                )
-              })
-            )}
-          </div>
-        </div>
-
-        <div className="bg-slate-950/80 border border-slate-800/80 p-5 rounded-2xl flex flex-col justify-between">
-          <div className="flex items-center justify-between text-xs font-bold text-slate-400 uppercase tracking-wider">
-            <span className="flex items-center gap-1.5"><Clock size={14} className="text-amber-400" /> Assiduité</span>
-          </div>
-          <div className="py-3">
-            <div className="flex items-baseline gap-2">
-              <p className={`text-4xl font-extrabold ${(child.absences?.length || 0) > 0 ? "text-amber-400" : "text-emerald-400"}`}>
-                {child.absences?.length || 0}
-              </p>
-              <span className="text-xs text-slate-400">absence(s)</span>
-            </div>
-            <p className="text-xs text-slate-500 mt-1">Non justifiée(s) à ce jour</p>
-          </div>
-          <div className="text-[11px] text-slate-400 pt-2 border-t border-slate-900 flex items-center gap-1.5">
-            {(child.absences?.length || 0) > 0 ? (
-              <span className="text-amber-400 flex items-center gap-1"><AlertTriangle size={12}/> Attention requise</span>
-            ) : (
-              <span className="text-emerald-400 flex items-center gap-1"><CheckCircle2 size={12}/> Dossier assiduité parfait</span>
-            )}
-          </div>
-        </div>
-
-        <div className={`border p-5 rounded-2xl flex flex-col justify-between backdrop-blur-xl ${impayes > 0 ? "bg-amber-500/5 border-amber-500/20 shadow-lg shadow-amber-500/5" : "bg-slate-950/80 border-slate-800/80"}`}>
-          <div className="flex items-center justify-between text-xs font-bold uppercase tracking-wider">
-            <span className={`flex items-center gap-1.5 ${impayes > 0 ? "text-amber-300" : "text-slate-400"}`}>
-              <Wallet size={14} className={impayes > 0 ? "text-amber-400" : "text-blue-400"} /> Scolarité
+      <div className="mt-5 grid gap-4 lg:grid-cols-3">
+        {/* NOTES APPROUVÉES UNIQUEMENT */}
+        <section className="rounded-2xl border border-slate-800 bg-slate-950/65 p-4">
+          <div className="flex items-center justify-between gap-2">
+            <h3 className="flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-slate-300">
+              <Award size={15} className="text-emerald-400" aria-hidden="true" />
+              Dernières notes validées
+            </h3>
+            <span className="text-xs text-slate-500">
+              {child._count.grades} au total
             </span>
           </div>
-          <div className="py-3">
-            <p className={`text-3xl font-extrabold truncate ${impayes > 0 ? "text-amber-400" : "text-emerald-400"}`}>
-              {impayes > 0 ? `${formatFCFA(impayes)} FCFA` : "Soldé"}
+          <p className="mt-1 text-[11px] text-slate-500">Toutes périodes confondues</p>
+          {child.grades.length === 0 ? (
+            <p className="mt-4 text-sm text-slate-400">
+              Aucune note approuvée publiée pour le moment.
             </p>
-            <p className="text-xs text-slate-400 mt-1">{impayes > 0 ? "Montant en attente" : "Aucun impayé"}</p>
+          ) : (
+            <ul className="mt-3 space-y-2">
+              {child.grades.map((grade) => (
+                <li
+                  key={grade.id}
+                  className="flex items-center justify-between gap-2 rounded-xl border border-slate-800/70 bg-slate-900/70 p-3"
+                >
+                  <div className="min-w-0">
+                    <p className="truncate text-xs font-semibold text-slate-200">
+                      {grade.subject}
+                    </p>
+                    <p className="text-[11px] text-slate-500">
+                      {grade.term || "Période non précisée"}
+                    </p>
+                  </div>
+                  <span className="shrink-0 rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-2 py-1 text-xs font-bold text-emerald-300">
+                    {scoreFormatter.format(grade.score)} / 20
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+          <Link
+            href="/parent/reports"
+            className="mt-4 inline-flex items-center gap-1.5 text-xs font-semibold text-sky-400 hover:text-sky-300"
+          >
+            Bulletins et résultats <ArrowRight size={13} aria-hidden="true" />
+          </Link>
+        </section>
+
+        {/* ABSENCES SANS DECLARATION TROMPEUSE */}
+        <section className="flex flex-col justify-between rounded-2xl border border-slate-800 bg-slate-950/65 p-4">
+          <div>
+            <h3 className="flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-slate-300">
+              <Clock3 size={15} className="text-amber-400" aria-hidden="true" />
+              Assiduité
+            </h3>
+            <p
+              className={`mt-5 text-4xl font-extrabold ${
+                unjustifiedAbsences > 0 ? "text-amber-400" : "text-emerald-400"
+              }`}
+            >
+              {unjustifiedAbsences}
+            </p>
+            <p className="mt-1 text-xs text-slate-400">
+              Absence{unjustifiedAbsences > 1 ? "s" : ""} non justifiée
+              {unjustifiedAbsences > 1 ? "s" : ""} enregistrée
+              {unjustifiedAbsences > 1 ? "s" : ""}
+            </p>
           </div>
-          <div className="pt-2 border-t border-slate-900/60 flex items-center justify-between text-[11px]">
-            <span className="text-slate-500">Statut</span>
-            <span className={impayes > 0 ? "text-amber-400 font-bold" : "text-emerald-400 font-bold"}>{impayes > 0 ? "En attente" : "À jour"}</span>
+          <p
+            className={`mt-5 flex items-center gap-2 border-t border-slate-800 pt-3 text-xs ${
+              unjustifiedAbsences > 0 ? "text-amber-300" : "text-slate-400"
+            }`}
+          >
+            {unjustifiedAbsences > 0 ? (
+              <AlertTriangle size={14} aria-hidden="true" />
+            ) : (
+              <CheckCircle2 size={14} aria-hidden="true" />
+            )}
+            {unjustifiedAbsences > 0
+              ? "Absence(s) à vérifier avec l'établissement"
+              : "Aucune absence non justifiée enregistrée"}
+          </p>
+        </section>
+
+        {/* FACTURES : montant de facture, pas dette nette présumée */}
+        <section className="flex flex-col justify-between rounded-2xl border border-slate-800 bg-slate-950/65 p-4">
+          <div>
+            <h3 className="flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-slate-300">
+              <Wallet size={15} className="text-sky-400" aria-hidden="true" />
+              Facturation
+            </h3>
+            <p className="mt-5 text-2xl font-extrabold text-white">
+              {pendingInvoices > 0 ? moneyFormatter.format(billedAmount) : "—"}
+            </p>
+            <p className="mt-1 text-xs text-slate-400">
+              {pendingInvoices > 0
+                ? `${pendingInvoices} facture(s) non marquée(s) payée(s)`
+                : "Aucune facture en attente enregistrée"}
+            </p>
+            {overdueCount > 0 && (
+              <p className="mt-3 inline-flex items-center gap-1.5 text-xs font-semibold text-amber-400">
+                <AlertTriangle size={13} aria-hidden="true" />
+                {overdueCount} échéance(s) dépassée(s)
+              </p>
+            )}
+            {pendingInvoices > 0 && (
+              <p className="mt-2 text-[11px] leading-relaxed text-slate-500">
+                Montant des factures, hors déduction d'éventuels paiements partiels.
+              </p>
+            )}
           </div>
-        </div>
+          <Link
+            href="/parent/invoices"
+            className="mt-5 inline-flex items-center gap-1.5 border-t border-slate-800 pt-3 text-xs font-semibold text-sky-400 hover:text-sky-300"
+          >
+            Consulter les factures <ArrowRight size={13} aria-hidden="true" />
+          </Link>
+        </section>
       </div>
-    </div>
-  )
+
+      {/* ECHEANCES PUBLIÉES POUR LA CLASSE : ne pas supposer non-soumission */}
+      <section className="mt-4 rounded-2xl border border-slate-800 bg-slate-950/40 p-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h3 className="flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-slate-300">
+            <CalendarDays size={15} className="text-indigo-400" aria-hidden="true" />
+            Prochaines échéances de {professional ? "la promotion" : "la classe"}
+          </h3>
+          <span className="text-[11px] text-slate-500">Devoirs publiés</span>
+        </div>
+        {nextHomework.length === 0 ? (
+          <p className="mt-3 text-xs text-slate-400">
+            Aucune échéance de devoir publiée à venir.
+          </p>
+        ) : (
+          <ul className="mt-3 grid gap-2 sm:grid-cols-2">
+            {nextHomework.map((homework) => (
+              <li
+                key={homework.id}
+                className="flex items-start gap-3 rounded-xl border border-slate-800 bg-slate-900/70 p-3"
+              >
+                <BookOpen size={16} className="mt-0.5 shrink-0 text-indigo-400" aria-hidden="true" />
+                <div className="min-w-0">
+                  <p className="break-words text-xs font-semibold text-slate-100">
+                    {homework.title}
+                  </p>
+                  <p className="mt-1 text-[11px] text-slate-400">
+                    {homework.assignment.subject} · {homework.type === "ONLINE" ? "En ligne" : "À déposer"}
+                  </p>
+                  <p className="mt-1 text-[11px] font-semibold text-indigo-300">
+                    {homework.dueDate ? dateFormatter.format(homework.dueDate) : "Date non précisée"}
+                  </p>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+        <p className="mt-2 text-[11px] text-slate-500">
+          Ces dates ne préjugent pas du statut de remise de l'apprenant.
+        </p>
+      </section>
+    </article>
+  );
 }
 
-export default async function ParentDashboard() {
-  const children = await getParentStudents()
+export default async function ParentDashboardPage() {
+  const session = await auth();
+  if (!session?.user?.id) redirect("/login");
 
-  if (!children || children.length === 0) {
-    return (
-      <div className="max-w-xl mx-auto mt-20 p-8 bg-slate-900/50 border border-slate-800 rounded-3xl text-center space-y-4 backdrop-blur-xl shadow-2xl">
-        <div className="w-16 h-16 bg-blue-500/10 text-blue-400 rounded-full flex items-center justify-center mx-auto border border-blue-500/20">
-          <Users size={28} />
-        </div>
-        <h2 className="text-xl font-bold text-white">Aucun enfant rattaché</h2>
-        <p className="text-slate-400 text-sm">Contactez l'administration.</p>
-      </div>
-    )
-  }
+  // Le rôle de la session peut être obsolète : vérifier dans PostgreSQL.
+  const parent = await prisma.user.findUnique({
+    where: { id: session.user.id },
+    select: { id: true, name: true, role: true },
+  });
+  if (!parent || parent.role !== "PARENT") notFound();
 
-  // FIX: On fetch tous les bulletins AVANT le rendu, plus de async dans le map
-  const childrenWithBulletins = await Promise.all(
-    children.map(async (child: any) => {
-      const bulletinT1 = await getBulletin(String(child.id), "T1").catch(() => null)
-      return { child, bulletinT1 }
-    })
-  )
+  const now = new Date();
+  const children = await loadParentChildren(parent.id);
+
+  // Récupérer deux prochaines échéances par classe sans les attribuer à tort
+  // à un devoir encore non remis.
+  const classIds = Array.from(new Set(children.map((child) => child.classId)));
+  const schedules = await Promise.all(
+    classIds.map(async (classId) => {
+      const homework = await prisma.homework.findMany({
+        where: {
+          status: "PUBLISHED",
+          dueDate: { gte: now },
+          assignment: { is: { classId } },
+        },
+        select: {
+          id: true,
+          title: true,
+          type: true,
+          dueDate: true,
+          assignment: { select: { subject: true } },
+        },
+        orderBy: [{ dueDate: "asc" }, { id: "asc" }],
+        take: 2,
+      });
+      return [classId, homework] as const;
+    }),
+  );
+  const upcomingByClass = new Map(schedules);
+
+  const unexcusedTotal = children.reduce(
+    (sum, child) => sum + child._count.absences,
+    0,
+  );
+  const validatedTotal = children.reduce(
+    (sum, child) => sum + child._count.grades,
+    0,
+  );
+  const unpaidInvoicesTotal = children.reduce(
+    (sum, child) => sum + child.invoices.length,
+    0,
+  );
 
   return (
-    <div className="space-y-8 max-w-7xl mx-auto pb-16 relative">
-      <div className="absolute top-0 right-1/4 w-96 h-96 bg-blue-600/10 rounded-full blur-[120px] pointer-events-none" />
-      <div className="absolute top-1/3 left-10 w-80 h-80 bg-emerald-600/10 rounded-full blur-[100px] pointer-events-none" />
-
-      <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-6 bg-slate-900/40 border border-slate-800/80 p-8 rounded-3xl backdrop-blur-2xl shadow-2xl">
-        <div className="space-y-2">
-          <div className="inline-flex items-center gap-2 bg-blue-500/10 border border-blue-500/20 text-blue-400 px-3.5 py-1.5 rounded-full text-xs font-semibold">
-            <Sparkles size={14} /> Portail Parent • Abidjan
+    <div className="relative mx-auto max-w-7xl space-y-7 pb-16">
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute right-4 top-0 h-72 w-72 rounded-full bg-sky-600/10 blur-[100px]"
+      />
+      <div className="relative rounded-3xl border border-slate-800 bg-slate-900/50 p-6 shadow-xl backdrop-blur-xl sm:p-8">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="space-y-3">
+            <span className="inline-flex items-center gap-2 rounded-full border border-sky-500/20 bg-sky-500/10 px-3 py-1.5 text-xs font-semibold text-sky-300">
+              <Sparkles size={14} aria-hidden="true" /> Espace famille
+            </span>
+            <h1 className="text-2xl font-extrabold tracking-tight text-white sm:text-3xl">
+              Tableau de bord parental
+            </h1>
+            <p className="max-w-2xl text-sm leading-relaxed text-slate-400">
+              {parent.name ? `Bienvenue, ${parent.name}. ` : ""}
+              Suivez les résultats validés, l'assiduité, les échéances et la facturation des apprenants rattachés à votre compte.
+            </p>
           </div>
-          <h1 className="text-3xl font-extrabold tracking-tight text-white">Suivi Scolaire de vos Enfants</h1>
-          <p className="text-sm text-slate-400 max-w-xl">Bulletins, notes, absences et situation financière.</p>
+          <Link
+            href="/parent/child"
+            className="inline-flex items-center gap-2 rounded-xl border border-slate-700 bg-slate-950/80 px-4 py-2.5 text-xs font-bold text-slate-200 hover:border-slate-500"
+          >
+            <GraduationCap size={16} className="text-sky-400" aria-hidden="true" />
+            Mes enfants
+            <ArrowRight size={14} aria-hidden="true" />
+          </Link>
         </div>
-        <div className="flex items-center gap-3">
-          <div className="bg-slate-950/80 border border-slate-800 px-4 py-3 rounded-2xl text-xs font-semibold text-slate-300 flex items-center gap-2">
-            <GraduationCap size={16} className="text-blue-400" />
-            <span>{children.length} Enfant(s)</span>
-          </div>
-          <PrintButton />
-        </div>
+        <p className="mt-4 inline-flex items-start gap-2 text-xs text-slate-500">
+          <ShieldCheck size={15} className="shrink-0 text-emerald-400" aria-hidden="true" />
+          Seules les notes approuvées par l'administration sont accessibles ici.
+        </p>
       </div>
 
-      <div className="space-y-6 relative z-10">
-        {childrenWithBulletins.map(({ child, bulletinT1 }) => (
-          <ChildDashboardCard key={child.id} child={child} bulletinT1={bulletinT1} />
-        ))}
+      <div className="relative grid grid-cols-2 gap-3 lg:grid-cols-4 lg:gap-4">
+        <SummaryCard
+          icon={Users}
+          label="Apprenants rattachés"
+          value={children.length}
+          detail="Enfants / personnes suivies"
+        />
+        <SummaryCard
+          icon={Award}
+          label="Notes validées"
+          value={validatedTotal}
+          detail="Toutes périodes confondues"
+          accent="text-emerald-400"
+        />
+        <SummaryCard
+          icon={Clock3}
+          label="Absences non justifiées"
+          value={unexcusedTotal}
+          detail="Enregistrements cumulés"
+          accent="text-amber-400"
+        />
+        <SummaryCard
+          icon={Wallet}
+          label="Factures en attente"
+          value={unpaidInvoicesTotal}
+          detail="Statuts PENDING / OVERDUE"
+          accent="text-indigo-400"
+        />
       </div>
+
+      {children.length === 0 ? (
+        <section className="relative mx-auto max-w-2xl space-y-4 rounded-3xl border border-slate-800 bg-slate-900/60 p-8 text-center shadow-xl">
+          <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl border border-sky-500/20 bg-sky-500/10 text-sky-400">
+            <Users size={28} aria-hidden="true" />
+          </div>
+          <h2 className="text-xl font-bold text-white">Aucun apprenant rattaché</h2>
+          <p className="text-sm leading-relaxed text-slate-400">
+            Aucun profil élève n'est actuellement associé à votre compte parent. Contactez l'administration de l'établissement pour faire vérifier ce rattachement.
+          </p>
+        </section>
+      ) : (
+        <section aria-label="Suivi des apprenants" className="relative space-y-5">
+          {children.map((child) => (
+            <ChildDashboardCard
+              key={child.id}
+              child={child}
+              now={now}
+              nextHomework={upcomingByClass.get(child.classId) ?? []}
+            />
+          ))}
+        </section>
+      )}
+
+      <p className="relative flex items-start gap-2 text-xs leading-relaxed text-slate-500">
+        <FileText size={15} className="mt-0.5 shrink-0" aria-hidden="true" />
+        Ce tableau de bord est informatif. Les bulletins certifiés, les reçus de paiement et les décisions pédagogiques officielles doivent être consultés dans leurs modules dédiés.
+      </p>
     </div>
-  )
+  );
 }

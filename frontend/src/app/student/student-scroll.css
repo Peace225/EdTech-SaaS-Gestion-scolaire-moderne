@@ -1,0 +1,158 @@
+
+/* ==========================================
+   EDTECH SaaS — STUDENT SCROLL DESIGN
+   Portail Élève & Formation Professionnelle
+========================================== */
+
+/* ==========================================
+   1. SCROLLBAR PRINCIPALE
+========================================== */
+
+.student-scroll {
+  overflow-x: hidden;
+
+  scrollbar-width: thin;
+  scrollbar-color: #475569 transparent;
+
+  overscroll-behavior-y: contain;
+}
+
+/* Chrome, Safari et Edge */
+
+.student-scroll::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+
+.student-scroll::-webkit-scrollbar-track {
+  background: transparent;
+  border-radius: 999px;
+}
+
+.student-scroll::-webkit-scrollbar-thumb {
+  background: #475569;
+  border: 2px solid #0b1626;
+  border-radius: 999px;
+  transition: background 0.2s ease;
+}
+
+.student-scroll::-webkit-scrollbar-thumb:hover {
+  background: #14b8a6;
+}
+
+.student-scroll::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* ==========================================
+   2. SIDEBAR — SCROLL INDÉPENDANT
+========================================== */
+
+@media (min-width: 1024px) {
+  .student-scroll {
+    scrollbar-gutter: stable;
+  }
+
+  .student-scroll:focus-within {
+    scrollbar-color: #14b8a6 transparent;
+  }
+}
+
+/* ==========================================
+   3. NAVIGATION HORIZONTALE MOBILE
+========================================== */
+
+.student-scroll-mobile {
+  display: flex;
+
+  overflow-x: auto;
+  overflow-y: hidden;
+
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+
+  overscroll-behavior-x: contain;
+
+  scroll-snap-type: x proximity;
+
+  -webkit-overflow-scrolling: touch;
+
+  touch-action: pan-x;
+
+  -webkit-mask-image: linear-gradient(
+    to right,
+    #000 0%,
+    #000 calc(100% - 18px),
+    transparent 100%
+  );
+
+  mask-image: linear-gradient(
+    to right,
+    #000 0%,
+    #000 calc(100% - 18px),
+    transparent 100%
+  );
+}
+
+/* Masquer la scrollbar horizontale */
+
+.student-scroll-mobile::-webkit-scrollbar {
+  display: none;
+}
+
+/* Navigation par onglets */
+
+.student-scroll-mobile > a {
+  flex-shrink: 0;
+  scroll-snap-align: start;
+}
+
+/* ==========================================
+   4. ANIMATIONS DE DÉFILEMENT
+========================================== */
+
+@media (prefers-reduced-motion: no-preference) {
+  .student-scroll,
+  .student-scroll-mobile {
+    scroll-behavior: smooth;
+  }
+}
+
+/* ==========================================
+   5. ACCESSIBILITÉ
+========================================== */
+
+@media (prefers-reduced-motion: reduce) {
+  .student-scroll,
+  .student-scroll-mobile {
+    scroll-behavior: auto;
+  }
+}
+
+/* ==========================================
+   6. ADAPTATION MOBILE
+========================================== */
+
+@media (max-width: 1023px) {
+  .student-scroll {
+    scrollbar-width: none;
+  }
+
+  .student-scroll::-webkit-scrollbar {
+    display: none;
+  }
+
+  #student-main-content {
+    scroll-margin-top: 140px;
+  }
+}
+
+/* ==========================================
+   7. SUPPORT TACTILE
+========================================== */
+
+@media (pointer: coarse) {
+  .student-scroll {
+    -webkit-overflow-scrolling: touch;
+  }
+}

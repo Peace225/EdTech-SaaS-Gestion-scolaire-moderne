@@ -1,148 +1,208 @@
 // src/app/student/assignments/upload/[id]/page.tsx
-"use client"
+import Link from "next/link";
+import { notFound, redirect } from "next/navigation";
+import { auth } from "@/auth";
+import { prisma } from "@/lib/prisma";
+import {
+  ArrowLeft,
+  CalendarClock,
+  CheckCircle2,
+  ClipboardList,
+  Download,
+  FileCheck2,
+  LockKeyhole,
+  ShieldAlert,
+  Sparkles,
+  UserRound,
+} from "lucide-react";
+import { submitHomeworkFileAction } from "../../actions";
+import { HomeworkUploadForm } from "../HomeworkUploadForm";
 
-import { useState } from "react"
-import { useParams, useRouter } from "next/navigation"
-import { Upload, Sparkles, FileText, ArrowLeft, Send, CheckCircle2 } from "lucide-react"
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
-export default function UploadAssignmentPage() {
-  const params = useParams()
-  const router = useRouter()
-  const id = params?.id
+type PageProps = {
+  params: Promise<{ id: string }>;
+  searchParams: Promise<{ error?: string | string[] }>;
+};
 
-  const [selectedFile, setSelectedFile] = useState<File | null>(null)
-  const [comment, setComment] = useState("")
-  const [isSubmitting, setIsSubmitting] = useState(false)
-  const [isSuccess, setIsSuccess] = useState(false)
+const errorMessages: Record<string, string> = {
+  unavailable: "Ce devoir n'est plus disponible pour votre classe ou promotion.",
+  late: "Le délai de remise est dépassé. Le dépôt a été fermé.",
+  submitted: "Une copie a déjà été envoyée pour ce devoir. Un second dépôt n'est pas autorisé.",
+  missing: "Sélectionnez un document avant de l'envoyer.",
+  size: "Le fichier doit être non vide et ne pas dépasser 4 Mo.",
+  type: "Fichier non accepté. Utilisez un PDF, DOCX, JPG ou PNG valide.",
+  invalid: "Le nom du document est invalide ou trop long.",
+};
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      setSelectedFile(e.target.files[0])
-    }
-  }
+const dateFormatter = new Intl.DateTimeFormat("fr-FR", {
+  dateStyle: "full",
+  timeStyle: "short",
+  timeZone: "UTC",
+});
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!selectedFile) return
+export default async function UploadAssignmentPage({ params, searchParams }: PageProps) {
+  const session = await auth();
+  if (!session?.user?.id) redirect("/login");
 
-    setIsSubmitting(true)
-    
-    // Simulation d'un envoi de fichier (remplacer par une Server Action ou fetch vers ton API)
-    setTimeout(() => {
-      setIsSubmitting(false)
-      setIsSuccess(true)
-    }, 1500)
-  }
+  // Le rôle de la session ne suffit pas : contrôler le rôle et l'affectation en base.
+  const account = await prisma.user.findUnique({
+    where: { id: session.user.id },
+    select: {
+      role: true,
+      studentProfile: {
+        select: { id: true, classId: true },
+      },
+    },
+  });
+
+  if (account?.role !== "STUDENT") redirect("/student/assignments");
+  if (!account.studentProfile) redirect("/student/dashboard");
+
+  const [{ id }, query] = await Promise.all([params, searchParams]);
+  if (!id) notFound();
+  const student = account.studentProfile;
+
+  // Un apprenant ne peut accéder qu'aux devoirs publiés de sa propre classe.
+  const homework = await prisma.homework.findFirst({
+    where: {
+      id,
+      type: "UPLOAD",
+      status: "PUBLISHED",
+      assignment: { is: { classId: student.classId } },
+    },
+    select: {
+      id: true,
+      title: true,
+      instructions: true,
+      dueDate: true,
+      createdAt: true,
+      assignment: {
+        select: {
+          subject: true,
+          class: { select: { name: true, level: true, educationType: true } },
+          teacher: { select: { name: true } },
+        },
+      },
+      submissions: {
+        where: { studentId: student.id },
+        take: 1,
+        select: {
+          id: true,
+          fileName: true,
+          status: true,
+          score: true,
+          feedback: true,
+          submittedAt: true,
+          gradedAt: true,
+        },
+      },
+    },
+  });
+
+  if (!homework) notFound();
+
+  const submission = homework.submissions[0] ?? null;
+  const isOverdue = homework.dueDate !== null && homework.dueDate.getTime() < Date.now();
+  const isProfessional = homework.assignment.class.educationType === "PROFESSIONAL";
+  const roleTitle = isProfessional ? "Formateur" : "Enseignant";
+  const classLabel = isProfessional ? "Formation / promotion" : "Classe";
+  const rawError = Array.isArray(query.error) ? query.error[0] : query.error;
+  const errorText = rawError ? errorMessages[rawError] : undefined;
+  const dueLabel = homework.dueDate ? dateFormatter.format(homework.dueDate) : "Sans échéance fixée";
+  const pendingLabel = isOverdue ? "Dépôt clôturé" : "Dépôt ouvert";
 
   return (
-    <div className="space-y-8 animate-in fade-in duration-500 max-w-4xl mx-auto pb-16 relative text-white">
-      
-      {/* Effets lumineux d'arrière-plan */}
-      <div className="absolute top-0 right-1/4 w-96 h-96 bg-blue-600/10 rounded-full blur-[120px] pointer-events-none" />
-      <div className="absolute top-1/3 left-10 w-80 h-80 bg-rose-600/10 rounded-full blur-[100px] pointer-events-none" />
+    <div className="relative mx-auto max-w-4xl space-y-6 pb-14 text-slate-100">
+      <div aria-hidden="true" className="pointer-events-none absolute -top-20 right-0 -z-10 h-72 w-72 rounded-full bg-teal-500/10 blur-3xl" />
 
-      {/* Bouton Retour */}
-      <button 
-        onClick={() => router.push("/student/assignments")}
-        className="inline-flex items-center gap-2 text-xs font-semibold text-slate-400 hover:text-white transition-colors cursor-pointer relative z-10"
-      >
-        <ArrowLeft size={16} /> Retour aux devoirs
-      </button>
+      <Link href="/student/assignments" className="inline-flex items-center gap-2 text-sm font-medium text-teal-300 transition hover:text-teal-200">
+        <ArrowLeft size={17} /> Retour aux devoirs
+      </Link>
 
-      {/* En-tête Premium */}
-      <div className="relative z-10 bg-slate-900/40 border border-slate-800/80 p-6 md:p-8 rounded-3xl backdrop-blur-2xl shadow-2xl space-y-2">
-        <div className="inline-flex items-center gap-2 bg-blue-500/10 border border-blue-500/20 text-blue-400 px-3.5 py-1.5 rounded-full text-xs font-semibold">
-          <Sparkles size={14} /> Dépôt de Devoir • Espace Sécurisé
+      <header className="rounded-3xl border border-slate-800 bg-[#111e30]/95 p-6 shadow-xl sm:p-8">
+        <div className="inline-flex items-center gap-2 rounded-full border border-teal-500/20 bg-teal-500/10 px-3 py-1.5 text-xs font-bold text-teal-300">
+          <Sparkles size={14} /> {isProfessional ? "Remise de travail — Espace Apprenant" : "Dépôt de devoir — Espace Élève"}
         </div>
-        <h1 className="text-2xl md:text-3xl font-extrabold tracking-tight">
-          Soumettre votre travail
-        </h1>
-        <p className="text-xs text-slate-400">
-          Référence du devoir : <strong className="text-slate-200">{id}</strong>. Veuillez téléverser votre fichier au format PDF, Word ou image.
+        <h1 className="mt-4 break-words text-2xl font-extrabold tracking-tight text-white sm:text-3xl">{homework.title}</h1>
+        <p className="mt-2 text-sm leading-6 text-slate-400">
+          {homework.assignment.subject} · {classLabel} : <span className="font-semibold text-slate-200">{homework.assignment.class.name}</span>
+          {homework.assignment.class.level ? ` — ${homework.assignment.class.level}` : ""}
         </p>
-      </div>
-
-      {isSuccess ? (
-        <div className="bg-slate-900/40 border border-slate-800/80 rounded-3xl p-12 text-center space-y-6 backdrop-blur-xl shadow-2xl relative z-10">
-          <div className="w-20 h-20 bg-emerald-500/10 text-emerald-400 rounded-full flex items-center justify-center mx-auto border border-emerald-500/20">
-            <CheckCircle2 size={40} />
-          </div>
-          <h2 className="text-2xl font-bold">Travail déposé avec succès !</h2>
-          <p className="text-slate-400 text-sm max-w-md mx-auto">
-            Votre fichier a été transmis à votre enseignant. Il sera évalué prochainement.
-          </p>
-          <button 
-            onClick={() => router.push("/student/assignments")}
-            className="bg-white hover:bg-slate-200 text-black px-6 py-3 rounded-2xl text-xs font-bold transition-all shadow-lg cursor-pointer"
-          >
-            Retourner à la liste des devoirs
-          </button>
+        <div className="mt-5 flex flex-wrap gap-2 text-xs">
+          <span className="inline-flex items-center gap-2 rounded-xl border border-slate-700 bg-slate-950/70 px-3 py-2 text-slate-300">
+            <UserRound size={14} className="text-blue-400" /> {roleTitle} : {homework.assignment.teacher.name ?? "Non renseigné"}
+          </span>
+          <span className="inline-flex items-center gap-2 rounded-xl border border-slate-700 bg-slate-950/70 px-3 py-2 text-slate-300">
+            <CalendarClock size={14} className="text-amber-400" /> Échéance : {dueLabel}{homework.dueDate ? " UTC" : ""}
+          </span>
+          <span className={`inline-flex items-center rounded-xl border px-3 py-2 font-semibold ${submission ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-300" : isOverdue ? "border-rose-500/20 bg-rose-500/10 text-rose-300" : "border-teal-500/20 bg-teal-500/10 text-teal-300"}`}>
+            {submission ? "Copie remise" : pendingLabel}
+          </span>
         </div>
-      ) : (
-        <form onSubmit={handleSubmit} className="bg-slate-900/40 border border-slate-800/80 rounded-3xl p-6 md:p-8 backdrop-blur-xl shadow-2xl space-y-6 relative z-10">
-          
-          {/* Zone de sélection de fichier */}
-          <div className="space-y-3">
-            <label className="text-xs font-bold uppercase tracking-wider text-slate-400">
-              Fichier du devoir (PDF, DOCX, JPG, PNG)
-            </label>
-            
-            <label className="border-2 border-dashed border-slate-800 hover:border-slate-700 bg-slate-950/80 p-8 rounded-2xl flex flex-col items-center justify-center gap-3 cursor-pointer transition-all group">
-              <div className="w-14 h-14 rounded-2xl bg-blue-500/10 text-blue-400 border border-blue-500/20 flex items-center justify-center group-hover:scale-110 transition-transform">
-                <Upload size={24} />
-              </div>
-              <div className="text-center">
-                <p className="text-sm font-bold text-white">
-                  {selectedFile ? selectedFile.name : "Cliquez ici pour choisir un fichier"}
-                </p>
-                <p className="text-xs text-slate-500 mt-1">
-                  {selectedFile ? `${(selectedFile.size / (1024 * 1024)).toFixed(2)} Mo` : "Glissez-déposez ou parcourez vos fichiers (Max 15 Mo)"}
-                </p>
-              </div>
-              <input 
-                type="file" 
-                onChange={handleFileChange} 
-                accept=".pdf,.doc,.docx,.png,.jpg,.jpeg" 
-                className="hidden" 
-                required 
-              />
-            </label>
-          </div>
+      </header>
 
-          {/* Commentaire optionnel */}
-          <div className="space-y-3">
-            <label className="text-xs font-bold uppercase tracking-wider text-slate-400">
-              Commentaire pour l'enseignant (Optionnel)
-            </label>
-            <textarea 
-              value={comment}
-              onChange={(e) => setComment(e.target.value)}
-              placeholder="Ajoutez une remarque ou une précision concernant votre travail..."
-              rows={4}
-              className="w-full bg-slate-950/80 border border-slate-800 rounded-2xl p-4 text-xs text-white placeholder:text-slate-600 focus:outline-none focus:border-blue-500 transition-colors resize-none"
-            />
-          </div>
+      <section aria-labelledby="assignment-instructions" className="rounded-3xl border border-slate-800 bg-[#111e30]/90 p-6 sm:p-8">
+        <h2 id="assignment-instructions" className="flex items-center gap-2 text-base font-bold text-white">
+          <ClipboardList size={19} className="text-cyan-400" /> Consignes du devoir
+        </h2>
+        <p className="mt-4 whitespace-pre-wrap break-words text-sm leading-7 text-slate-300">{homework.instructions}</p>
+      </section>
 
-          {/* Bouton de validation */}
-          <div className="flex justify-end pt-2">
-            <button
-              type="submit"
-              disabled={isSubmitting || !selectedFile}
-              className="bg-white hover:bg-slate-200 disabled:opacity-50 text-black px-8 py-3.5 rounded-2xl text-xs font-extrabold transition-all flex items-center gap-2 shadow-lg cursor-pointer"
-            >
-              {isSubmitting ? (
-                <>Envoi en cours...</>
-              ) : (
-                <>
-                  <Send size={15} /> Valider et envoyer le devoir
-                </>
-              )}
-            </button>
-          </div>
-
-        </form>
+      {errorText && !submission && (
+        <div role="alert" className="flex items-start gap-3 rounded-2xl border border-rose-500/30 bg-rose-500/10 p-4 text-sm text-rose-200">
+          <ShieldAlert size={19} className="mt-0.5 shrink-0" /> {errorText}
+        </div>
       )}
 
+      {submission ? (
+        <section aria-labelledby="submission-title" className="space-y-5 rounded-3xl border border-emerald-500/20 bg-[#111e30] p-6 sm:p-8">
+          <div className="flex items-start gap-3">
+            <CheckCircle2 size={24} className="mt-0.5 shrink-0 text-emerald-400" />
+            <div>
+              <h2 id="submission-title" className="text-lg font-bold text-white">Travail déjà transmis</h2>
+              <p className="mt-1 text-sm text-slate-400">Votre copie a été enregistrée le {dateFormatter.format(submission.submittedAt)} UTC.</p>
+            </div>
+          </div>
+          <div className="flex flex-col justify-between gap-3 rounded-2xl border border-slate-700 bg-slate-950/60 p-4 sm:flex-row sm:items-center">
+            <div className="flex min-w-0 items-center gap-3">
+              <FileCheck2 size={20} className="shrink-0 text-teal-300" />
+              <span className="min-w-0 break-all text-sm text-slate-200">{submission.fileName}</span>
+            </div>
+            <Link href={`/student/assignments/submission/${encodeURIComponent(submission.id)}`} className="inline-flex shrink-0 items-center justify-center gap-2 rounded-xl bg-teal-500 px-4 py-2.5 text-sm font-bold text-[#06211f] transition hover:bg-teal-400">
+              <Download size={16} /> Télécharger ma copie
+            </Link>
+          </div>
+          {submission.status === "GRADED" ? (
+            <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/5 p-4">
+              <p className="font-semibold text-emerald-300">Travail corrigé{submission.score !== null ? ` · ${submission.score}/20` : ""}</p>
+              {submission.feedback && <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-6 text-slate-300">{submission.feedback}</p>}
+              {submission.gradedAt && <p className="mt-2 text-xs text-slate-400">Corrigé le {dateFormatter.format(submission.gradedAt)} UTC.</p>}
+            </div>
+          ) : (
+            <p className="text-sm text-slate-400">Votre copie est en attente de correction par {isProfessional ? "le formateur" : "l'enseignant"}.</p>
+          )}
+        </section>
+      ) : isOverdue ? (
+        <div role="status" className="flex items-start gap-3 rounded-2xl border border-rose-500/20 bg-rose-500/10 p-5 text-sm leading-6 text-rose-200">
+          <ShieldAlert size={20} className="mt-0.5 shrink-0" />
+          <p>La date limite est dépassée. Le dépôt est fermé. Contactez {isProfessional ? "votre formateur" : "votre enseignant"} si vous avez besoin d'une dérogation.</p>
+        </div>
+      ) : (
+        <section aria-labelledby="upload-title" className="rounded-3xl border border-slate-800 bg-[#111e30] p-6 shadow-xl sm:p-8">
+          <h2 id="upload-title" className="text-lg font-bold text-white">Déposer mon travail</h2>
+          <p className="mt-2 text-sm text-slate-400">Vous pouvez déposer une seule copie pour ce devoir. Vérifiez votre document avant l'envoi.</p>
+          <div className="mt-6">
+            <HomeworkUploadForm homeworkId={homework.id} action={submitHomeworkFileAction} />
+          </div>
+        </section>
+      )}
+
+      <div className="flex items-start gap-3 rounded-2xl border border-slate-800 bg-slate-950/50 p-4 text-xs leading-6 text-slate-400">
+        <LockKeyhole size={18} className="mt-1 shrink-0 text-teal-400" />
+        <p>Votre copie n'est pas publique. Les fichiers sont accessibles depuis un lien privé dont l'autorisation est vérifiée côté serveur. Ne déposez pas de données médicales ou personnelles sensibles inutiles.</p>
+      </div>
     </div>
-  )
+  );
 }

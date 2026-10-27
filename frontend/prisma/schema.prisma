@@ -42,6 +42,28 @@ enum ExerciseStatus {
   PUBLISHED
 }
 
+// Type de parcours de la classe ou de la cohorte
+enum EducationType {
+  SCHOOL
+  PROFESSIONAL
+}
+
+enum LearningCourseStatus {
+  DRAFT
+  PUBLISHED
+}
+
+enum LearningAssessmentKind {
+  PLACEMENT
+  FINAL
+}
+
+enum LearningLevel {
+  BEGINNER
+  INTERMEDIATE
+  ADVANCED
+}
+
 // ==========================================
 // AUTHENTIFICATION AUTH.JS
 // ==========================================
@@ -192,9 +214,10 @@ model ParentProfile {
 // ==========================================
 
 model Class {
-  id    String @id @default(cuid())
-  name  String
-  level String
+  id            String        @id @default(cuid())
+  name          String
+  level         String
+  educationType EducationType @default(SCHOOL)
 
   students            Student[]
   teachingAssignments TeachingAssignment[]
@@ -221,11 +244,14 @@ model Student {
 
   class Class @relation(fields: [classId], references: [id])
 
-  grades               Grade[]               @relation("StudentGrades")
-  invoices             Invoice[]             @relation("StudentInvoices")
-  teacherAppreciations TeacherAppreciation[]
-  absences             Absence[]
-  homeworkSubmissions  HomeworkSubmission[]
+  grades                 Grade[]                 @relation("StudentGrades")
+  invoices               Invoice[]               @relation("StudentInvoices")
+  teacherAppreciations   TeacherAppreciation[]
+  absences               Absence[]
+  homeworkSubmissions    HomeworkSubmission[]
+  lessonProgress         StudentLessonProgress[]
+  learningAttempts       LearningAttempt[]
+  onlineHomeworkAttempts OnlineHomeworkAttempt[]
 
   @@index([parentId])
   @@index([classId])
@@ -249,7 +275,8 @@ model TeachingAssignment {
   // Exercices associés à cette affectation
   exercises Exercise[]
 
-  homeworks Homework[]
+  homeworks       Homework[]
+  learningCourses LearningCourse[]
 
   @@unique([teacherId, classId, subject])
   @@index([teacherId])
@@ -444,7 +471,9 @@ model Homework {
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @default(now()) @updatedAt
 
-  submissions HomeworkSubmission[]
+  submissions     HomeworkSubmission[]
+  onlineQuestions OnlineHomeworkQuestion[]
+  onlineAttempts  OnlineHomeworkAttempt[]
 
   @@index([assignmentId, status, dueDate])
   @@index([createdById, status, createdAt])
@@ -482,4 +511,198 @@ model HomeworkSubmission {
   @@index([homeworkId, submittedAt])
   @@index([studentId, submittedAt])
   @@index([status, submittedAt])
+}
+
+// ==========================================
+// PARCOURS PROGRESSIFS ET EVALUATIONS
+// ==========================================
+
+model LearningCourse {
+  id           String               @id @default(cuid())
+  title        String               @db.VarChar(180)
+  description  String               @db.Text
+  status       LearningCourseStatus @default(DRAFT)
+  assignmentId String
+  assignment   TeachingAssignment   @relation(fields: [assignmentId], references: [id], onDelete: Restrict)
+  lessons      LearningLesson[]
+  assessments  LearningAssessment[]
+  createdAt    DateTime             @default(now())
+  updatedAt    DateTime             @updatedAt
+
+  @@index([assignmentId, status])
+}
+
+model LearningLesson {
+  id               String                  @id @default(cuid())
+  courseId         String
+  course           LearningCourse          @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  position         Int
+  title            String                  @db.VarChar(180)
+  content          String                  @db.Text
+  estimatedMinutes Int                     @default(15)
+  resourceUrl      String?                 @db.Text
+  progress         StudentLessonProgress[]
+  createdAt        DateTime                @default(now())
+
+  @@unique([courseId, position])
+}
+
+model StudentLessonProgress {
+  id          String         @id @default(cuid())
+  studentId   String
+  student     Student        @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  lessonId    String
+  lesson      LearningLesson @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+  completedAt DateTime       @default(now())
+
+  @@unique([studentId, lessonId])
+  @@index([studentId, completedAt])
+}
+
+model LearningAssessment {
+  id           String                 @id @default(cuid())
+  courseId     String
+  course       LearningCourse         @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  kind         LearningAssessmentKind
+  passingScore Int                    @default(70)
+  published    Boolean                @default(false)
+  questions    LearningQuestion[]
+  attempts     LearningAttempt[]
+
+  @@unique([courseId, kind])
+}
+
+model LearningQuestion {
+  id            String             @id @default(cuid())
+  assessmentId  String
+  assessment    LearningAssessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+  position      Int
+  prompt        String             @db.Text
+  optionA       String             @db.Text
+  optionB       String             @db.Text
+  optionC       String             @db.Text
+  optionD       String             @db.Text
+  correctOption String             @db.VarChar(1)
+
+  @@unique([assessmentId, position])
+}
+
+model LearningAttempt {
+  id           String             @id @default(cuid())
+  studentId    String
+  student      Student            @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  assessmentId String
+  assessment   LearningAssessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+  percentScore Int
+  level        LearningLevel?
+  createdAt    DateTime           @default(now())
+
+  @@index([studentId, assessmentId, createdAt])
+}
+
+// ==========================================
+// COMPOSITIONS ET EVALUATIONS EN LIGNE
+// ==========================================
+
+// ==========================================
+// 1. QUESTIONS DES COMPOSITIONS
+// ==========================================
+
+model OnlineHomeworkQuestion {
+  id String @id @default(cuid())
+
+  // Devoir auquel appartient la question
+  homeworkId String
+  homework   Homework @relation(fields: [homeworkId], references: [id], onDelete: Cascade)
+
+  // Ordre de la question
+  position Int
+
+  // Énoncé
+  prompt String @db.Text
+
+  // Propositions de réponses
+  optionA String @db.Text
+  optionB String @db.Text
+  optionC String @db.Text
+  optionD String @db.Text
+
+  // Bonne réponse : A, B, C ou D
+  correctOption String @db.VarChar(1)
+
+  // Points attribués
+  points Int @default(1)
+
+  // Réponses des apprenants
+  answers OnlineHomeworkAnswer[]
+
+  @@unique([homeworkId, position])
+  @@index([homeworkId])
+}
+
+// ==========================================
+// 2. TENTATIVES DES APPRENANTS
+// ==========================================
+
+model OnlineHomeworkAttempt {
+  id String @id @default(cuid())
+
+  // Composition
+  homeworkId String
+  homework   Homework @relation(fields: [homeworkId], references: [id], onDelete: Restrict)
+
+  // Apprenant
+  studentId String
+  student   Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  // Début de la composition
+  startedAt DateTime @default(now())
+
+  // Fin autorisée, calculée côté serveur
+  expiresAt DateTime
+
+  // Dernière activité
+  lastActivityAt DateTime?
+
+  // Date de soumission définitive
+  submittedAt DateTime?
+
+  // Résultats calculés côté serveur
+  scorePercent   Int?
+  correctAnswers Int?
+  totalQuestions Int?
+
+  // Réponses enregistrées
+  answers OnlineHomeworkAnswer[]
+
+  // Une tentative par apprenant et devoir
+  @@unique([homeworkId, studentId])
+  @@index([studentId, submittedAt])
+  @@index([expiresAt, submittedAt])
+}
+
+// ==========================================
+// 3. REPONSES DES APPRENANTS
+// ==========================================
+
+model OnlineHomeworkAnswer {
+  id String @id @default(cuid())
+
+  // Tentative concernée
+  attemptId String
+  attempt   OnlineHomeworkAttempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+
+  // Question concernée
+  questionId String
+  question   OnlineHomeworkQuestion @relation(fields: [questionId], references: [id], onDelete: Restrict)
+
+  // Choix de l'apprenant : A, B, C ou D
+  choice String @db.VarChar(1)
+
+  // Date de dernière modification
+  updatedAt DateTime @updatedAt
+
+  // Une seule réponse par question et tentative
+  @@unique([attemptId, questionId])
+  @@index([questionId])
 }
